@@ -187,14 +187,14 @@ pub enum Action {
     /// cancellation and shutdown. Dispatchers without a release context must
     /// degrade this action to a balanced tap rather than leave keys held.
     HoldShortcut(KeyCombo),
-    /// Show the macOS application switcher — the ⌘Tab HUD. Held open for the
-    /// lifetime of the physical button press (mirroring [`Action::HoldShortcut`]):
-    /// the press posts ⌘ down plus a single ⇥ tap, the wheel cycles the
-    /// selection while the switcher is open, and the terminal release posts
-    /// ⌘ up, committing the selection. A dispatcher without a release context
-    /// degrades to a balanced ⌘⇥ tap — a quick switch to the next application.
-    /// Linux and Windows hold Alt with the same ⇥ tap, which is their native
-    /// application-switcher chord.
+    /// Show the application switcher (⌘Tab on macOS; Alt+Tab on Linux and
+    /// Windows), held open for the lifetime of the physical button press
+    /// (mirroring [`Action::HoldShortcut`]). While it is open, the press
+    /// posts the switcher modifier down plus a single ⇥ tap and the wheel
+    /// cycles the selection; the terminal release posts the modifier up,
+    /// committing the selection. A dispatcher without a release context
+    /// degrades to a balanced ⌘⇥ / Alt+Tab tap — a quick switch to the next
+    /// application.
     ///
     /// Assign this as a single action, not a gesture click: gesture buttons
     /// fire their click one-shot at release (tapping the switcher closed
