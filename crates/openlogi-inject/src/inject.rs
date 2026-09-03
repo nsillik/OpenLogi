@@ -154,6 +154,22 @@ impl HeldOutput {
 static HELD_OUTPUT: LazyLock<Mutex<HeldOutput>> =
     LazyLock::new(|| Mutex::new(HeldOutput::default()));
 
+/// Unit tests record the held-output edge plan here instead of posting real
+/// platform events (see the test seam in `hold_transition`).
+#[cfg(all(
+    test,
+    any(target_os = "linux", target_os = "macos", target_os = "windows")
+))]
+static TEST_EDGES: LazyLock<Mutex<Vec<HoldTransition>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Serializes tests that drive the held-output state through
+/// `hold_transition`.
+#[cfg(all(
+    test,
+    any(target_os = "linux", target_os = "macos", target_os = "windows")
+))]
+static TEST_EDGES_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
 fn held_keys(combo: &KeyCombo) -> Vec<HeldKey> {
     let mut keys = Vec::with_capacity(4);
     #[cfg(target_os = "macos")]
@@ -255,12 +271,24 @@ pub struct HeldChord {
 }
 
 impl HeldChord {
-    /// Replace this held chord without releasing physical keys shared by both.
+    /// Replace this held output without flickering keys shared by both.
+    ///
+    /// Chord replacements post one combined transition, so keys shared by the
+    /// old and new chords never see an edge. An open application switcher
+    /// commits on its modifier up-edge, so replacing one posts that release
+    /// first: a replacement chord sharing the switcher modifier must not
+    /// extend the switcher hold.
     pub fn replace(&mut self, combo: &KeyCombo) {
         let keys = held_keys(combo);
         let old = std::mem::replace(&mut self.keys, keys);
+        let was_switcher = self.app_switcher;
         self.app_switcher = false;
-        hold_transition(Some(&old), Some(&self.keys));
+        if was_switcher {
+            hold_transition(Some(&old), None);
+            hold_transition(None, Some(&self.keys));
+        } else {
+            hold_transition(Some(&old), Some(&self.keys));
+        }
     }
 
     /// Whether this output holds the application switcher open (see
@@ -334,7 +362,34 @@ fn tap_app_switcher() {
     }
 }
 
+/// Test seam for [`hold_transition`]: advance the same ownership state and
+/// record the computed edges in posting order instead of posting real
+/// platform events.
+#[cfg(all(
+    test,
+    any(target_os = "linux", target_os = "macos", target_os = "windows")
+))]
+fn record_hold_transition(released: Option<&[HeldKey]>, pressed: Option<&[HeldKey]>) -> bool {
+    let transition = HELD_OUTPUT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .transition(released, pressed);
+    TEST_EDGES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(transition);
+    true
+}
+
 fn hold_transition(released: Option<&[HeldKey]>, pressed: Option<&[HeldKey]>) {
+    #[cfg(all(
+        test,
+        any(target_os = "linux", target_os = "macos", target_os = "windows")
+    ))]
+    if record_hold_transition(released, pressed) {
+        return;
+    }
+
     cfg_select! {
         target_os = "macos" => {
             let mut output = HELD_OUTPUT.lock().unwrap_or_else(PoisonError::into_inner);
@@ -601,6 +656,28 @@ mod tests {
         super::held_keys(combo)
     }
 
+    /// Serializes against other held-output tests and resets the recording.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    fn reset_recorded_edges() -> std::sync::MutexGuard<'static, ()> {
+        let guard = super::TEST_EDGES_GUARD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        super::TEST_EDGES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        guard
+    }
+
+    /// Takes everything recorded since the last reset, in posting order.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    fn take_recorded_edges() -> Vec<HoldTransition> {
+        let mut edges = super::TEST_EDGES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut *edges)
+    }
+
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[test]
     fn shared_control_stays_down_until_its_last_chord_ends() {
@@ -773,6 +850,76 @@ mod tests {
                 up: vec![HeldKey::Alt],
                 down: vec![],
             }
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn replacing_a_held_chord_keeps_shared_keys_silent() {
+        let _serial = reset_recorded_edges();
+        let old = combo("Ctrl+A");
+        let new = combo("Ctrl+D");
+        let mut held = super::press_hold(&old);
+
+        held.replace(&new);
+
+        assert_eq!(
+            take_recorded_edges(),
+            vec![
+                // The hold opens.
+                HoldTransition {
+                    up: vec![],
+                    down: keys(&old),
+                },
+                // Replacement swaps only the non-shared keys.
+                HoldTransition {
+                    up: vec![HeldKey::Key(old.key())],
+                    down: vec![HeldKey::Key(new.key())],
+                },
+            ]
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn replacing_a_held_switcher_commits_it_before_pressing_the_replacement() {
+        let _serial = reset_recorded_edges();
+        // A chord sharing the platform's switcher modifier is exactly the
+        // replacement that must not extend the switcher hold.
+        #[cfg(target_os = "macos")]
+        let replacement = combo("Cmd+B");
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        let replacement = combo("Alt+F4");
+        // What `press_hold_app_switcher` posts before its Tab tap (the tap
+        // itself posts real events, so the fixture posts the hold directly).
+        let mut held = super::HeldChord {
+            keys: super::app_switcher_hold_keys().to_vec(),
+            app_switcher: true,
+        };
+        super::hold_transition(None, Some(&held.keys));
+
+        held.replace(&replacement);
+
+        assert_eq!(
+            take_recorded_edges(),
+            vec![
+                // The hold opens.
+                HoldTransition {
+                    up: vec![],
+                    down: super::app_switcher_hold_keys().to_vec(),
+                },
+                // The switcher commits first: its modifier goes up, the edge
+                // the native HUD commits on.
+                HoldTransition {
+                    up: super::app_switcher_hold_keys().to_vec(),
+                    down: vec![],
+                },
+                // Only then does the replacement chord press its keys.
+                HoldTransition {
+                    up: vec![],
+                    down: keys(&replacement),
+                },
+            ]
         );
     }
 
