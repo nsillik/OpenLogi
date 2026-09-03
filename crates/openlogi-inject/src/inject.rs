@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex, PoisonError};
 
 use openlogi_core::binding::KeyboardUsage;
-use openlogi_core::binding::{Action, KeyCombo};
+use openlogi_core::binding::{Action, HoldKind, KeyCombo};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use openlogi_core::binding::{Script, WorkflowStep};
 use openlogi_core::scroll::ScrollDelta;
@@ -295,59 +295,63 @@ pub fn execute(action: &Action) {
     }
 }
 
-/// The kind of held keyboard output a [`HeldChord`] owns.
+/// What kind of held output a [`HeldChord`] currently owns.
 ///
-/// The kind selects how a hold opens and how kind-change replacements are
-/// ordered; every kind still releases through the same drop path. A future
+/// Private to the hold machinery: [`HeldChord`] itself reasons about how an
+/// output opened — an open switcher commits on its modifier's release, so
+/// retargeting away from one must post that release before anything else.
+/// Nothing outside this module asks the kind; callers ask the runtime to
+/// hold an action and the runtime maps that to a [`HeldChord`]. A future
 /// held output (media hold, repeat hold, …) extends this enum and its
 /// constructor rather than adding another flag to [`HeldChord`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HeldKind {
+enum HeldKind {
     /// A held chord ([`press_hold`]).
     Chord,
     /// The held application switcher ([`press_hold_app_switcher`]).
     AppSwitcher,
 }
 
-/// The transition schedule a held-output replacement posts, in posting
-/// order.
+/// What repointing a held output at a new kind must do, in edge order.
 ///
 /// A chord replacing a chord is one combined transition, so keys shared by
 /// both never see an edge. An open application switcher commits on its
-/// modifier's up-edge, so replacing one must release first and press the
-/// replacement afterwards: a combined transition would keep a shared
-/// modifier down and extend the switcher hold.
+/// modifier's up-edge, so leaving it must release first and press the
+/// replacement afterwards: a combined transition would keep the shared
+/// modifier down and extend the switcher hold. Opening the switcher from a
+/// chord presses its modifier (keeping a shared modifier down), taps the
+/// opening Tab, and only then releases the keys the chord held alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Replacement<'a> {
-    /// Release `old` and press `new` in one combined transition.
-    Combined {
-        old: &'a [HeldKey],
-        new: &'a [HeldKey],
-    },
-    /// Release `old` — committing an open switcher — then press `new`.
-    CommitThenPress {
-        old: &'a [HeldKey],
-        new: &'a [HeldKey],
-    },
+enum Retarget<'a> {
+    /// The press already holds the requested output — no edges, no re-tap.
+    Keep,
+    /// Swap the current chord for `combo` in one combined transition.
+    SwapToChord(&'a KeyCombo),
+    /// Release the current keys (committing an open switcher), then press
+    /// `combo`.
+    CommitThenPressChord(&'a KeyCombo),
+    /// Press the switcher modifier, tap Tab, then release the current keys.
+    OpenSwitcher,
 }
 
-/// The schedule for replacing the held output of kind `old_kind` with
-/// `new` keys. Pure so the ordering contract is unit-testable without
-/// synthesising input.
+/// The pure kind-change matrix [`HeldChord::retarget`] executes.
 #[must_use]
-fn replacement<'a>(old_kind: HeldKind, old: &'a [HeldKey], new: &'a [HeldKey]) -> Replacement<'a> {
-    if old_kind == HeldKind::AppSwitcher {
-        Replacement::CommitThenPress { old, new }
-    } else {
-        Replacement::Combined { old, new }
+fn retarget_plan(current: HeldKind, kind: HoldKind<'_>) -> Retarget<'_> {
+    match (current, kind) {
+        (HeldKind::AppSwitcher, HoldKind::Switcher) => Retarget::Keep,
+        (HeldKind::Chord, HoldKind::Chord(combo)) => Retarget::SwapToChord(combo),
+        (HeldKind::AppSwitcher, HoldKind::Chord(combo)) => Retarget::CommitThenPressChord(combo),
+        (HeldKind::Chord, HoldKind::Switcher) => Retarget::OpenSwitcher,
+        (_, HoldKind::None) => unreachable!("non-held kinds never reach the hold map"),
     }
 }
 
 /// One synthetic held keyboard output, released exactly once when dropped.
 ///
-/// Keep this value with the physical press lifecycle. Replacing its chord
-/// preserves physical keys shared by the old and new chords; cancellation,
-/// shutdown, and unwinding all release the current output through [`Drop`].
+/// Keep this value with the physical press lifecycle. Repointing it at a
+/// new output ([`HeldChord::retarget`]) preserves physical keys shared by
+/// the old and new outputs; cancellation, shutdown, and unwinding all
+/// release the current output through [`Drop`].
 #[must_use = "dropping the held output immediately releases its synthetic keys"]
 pub struct HeldChord {
     keys: Vec<HeldKey>,
@@ -355,33 +359,41 @@ pub struct HeldChord {
 }
 
 impl HeldChord {
-    /// Replace this held output without flickering keys shared by both.
+    /// Repoint this held output at `kind` — a repeat trigger or per-app
+    /// rebind re-firing a held action on the same physical press.
     ///
-    /// Chord replacements post one combined transition, so keys shared by the
-    /// old and new chords never see an edge. An open application switcher
-    /// commits on its modifier up-edge, so replacing one posts that release
-    /// first: a replacement chord sharing the switcher modifier must not
-    /// extend the switcher hold.
-    pub fn replace(&mut self, combo: &KeyCombo) {
-        let keys = held_keys(combo);
-        let old_keys = std::mem::replace(&mut self.keys, keys);
-        let old_kind = self.kind;
-        self.kind = HeldKind::Chord;
-        match replacement(old_kind, &old_keys, &self.keys) {
-            Replacement::Combined { old, new } => {
-                hold_transition(Some(old), Some(new));
+    /// Orders edges per the `Retarget` contract: keys shared by the old
+    /// and new outputs never see an edge, an open switcher commits (its
+    /// modifier up-edge) before a chord that shares the modifier can take
+    /// over, and the switcher's opening Tab tap posts exactly once per time
+    /// it opens.
+    pub fn retarget(&mut self, kind: HoldKind<'_>) {
+        match retarget_plan(self.kind, kind) {
+            Retarget::Keep => {}
+            Retarget::SwapToChord(combo) => {
+                let keys = held_keys(combo);
+                let old_keys = std::mem::replace(&mut self.keys, keys);
+                hold_transition(Some(&old_keys), Some(&self.keys));
             }
-            Replacement::CommitThenPress { old, new } => {
-                hold_transition(Some(old), None);
-                hold_transition(None, Some(new));
+            Retarget::CommitThenPressChord(combo) => {
+                self.kind = HeldKind::Chord;
+                let keys = held_keys(combo);
+                let old_keys = std::mem::replace(&mut self.keys, keys);
+                hold_transition(Some(&old_keys), None);
+                hold_transition(None, Some(&self.keys));
+            }
+            Retarget::OpenSwitcher => {
+                self.kind = HeldKind::AppSwitcher;
+                let keys = app_switcher_hold_keys().to_vec();
+                let old_keys = std::mem::replace(&mut self.keys, keys);
+                // Open the switcher first — a modifier the chord already held
+                // stays down across the fresh press — then release the keys
+                // the chord held alone.
+                hold_transition(None, Some(&self.keys));
+                tap_app_switcher();
+                hold_transition(Some(&old_keys), None);
             }
         }
-    }
-
-    /// The kind of held output this chord owns (see [`HeldKind`]).
-    #[must_use]
-    pub fn kind(&self) -> HeldKind {
-        self.kind
     }
 }
 
@@ -674,10 +686,10 @@ mod tests {
     use openlogi_core::scroll::ScrollDelta;
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    use openlogi_core::binding::KeyCombo;
+    use openlogi_core::binding::{HoldKind, KeyCombo};
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    use super::{HeldKey, HeldOutput, HoldTransition};
+    use super::{HeldKey, HeldKind, HeldOutput, HoldTransition, Retarget};
     use super::{QuantizedScroll, ScrollQuantizer};
 
     /// Synthetic high-resolution input: eight eighth-ticks must total exactly
@@ -892,28 +904,42 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[test]
-    fn chord_replacements_post_one_combined_transition() {
-        let old = keys(&combo("Ctrl+A"));
-        let new = keys(&combo("Ctrl+D"));
+    fn retarget_plan_covers_the_kind_change_matrix() {
+        let combo = combo("Ctrl+A");
 
-        // A chord replacing a chord is one combined transition: keys shared
-        // by both release and press in the same posting, so they never see
-        // an edge (the edge math is covered by
+        // Chord → chord: one combined swap; shared keys never see an edge
+        // (the edge math is covered by
         // `replacement_preserves_shared_physical_outputs`).
         assert_eq!(
-            super::replacement(super::HeldKind::Chord, &old, &new),
-            super::Replacement::Combined {
-                old: &old,
-                new: &new,
-            }
+            super::retarget_plan(HeldKind::Chord, HoldKind::Chord(&combo)),
+            Retarget::SwapToChord(&combo)
+        );
+        // Switcher → chord: release first (committing the switcher on its
+        // modifier's up-edge), then press — a combined swap would keep a
+        // chord sharing the modifier down and extend the hold.
+        assert_eq!(
+            super::retarget_plan(HeldKind::AppSwitcher, HoldKind::Chord(&combo)),
+            Retarget::CommitThenPressChord(&combo)
+        );
+        // Switcher → switcher: the opening Tab tap already posted — a repeat
+        // trigger must not re-tap.
+        assert_eq!(
+            super::retarget_plan(HeldKind::AppSwitcher, HoldKind::Switcher),
+            Retarget::Keep
+        );
+        // Chord → switcher: press the modifier, tap, then release the keys
+        // the chord held alone.
+        assert_eq!(
+            super::retarget_plan(HeldKind::Chord, HoldKind::Switcher),
+            Retarget::OpenSwitcher
         );
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[test]
-    fn replacing_an_open_switcher_commits_it_before_pressing_the_replacement() {
+    fn retargeting_an_open_switcher_commits_it_before_pressing_the_replacement() {
         // A chord sharing the platform's switcher modifier is exactly the
-        // replacement that must not extend the switcher hold.
+        // retarget that must not extend the switcher hold.
         let old = super::app_switcher_hold_keys().to_vec();
         #[cfg(target_os = "macos")]
         let replacement = combo("Cmd+B");
@@ -921,19 +947,13 @@ mod tests {
         let replacement = combo("Alt+F4");
         let new = keys(&replacement);
 
-        // The open switcher commits on its modifier's up-edge, so replacing
-        // it must release first and press the chord afterwards — a combined
-        // transition would keep the shared modifier down and extend the hold.
         assert_eq!(
-            super::replacement(super::HeldKind::AppSwitcher, &old, &new),
-            super::Replacement::CommitThenPress {
-                old: &old,
-                new: &new,
-            }
+            super::retarget_plan(HeldKind::AppSwitcher, HoldKind::Chord(&replacement)),
+            Retarget::CommitThenPressChord(&replacement)
         );
 
-        // The schedule that replacement posts against one physical state:
-        // the switcher opens, its release commits it, then the chord presses.
+        // The schedule that plan posts against one physical state: the
+        // switcher opens, its release commits it, then the chord presses.
         let mut output = HeldOutput::default();
         assert_eq!(
             output.transition(None, Some(&old)),
