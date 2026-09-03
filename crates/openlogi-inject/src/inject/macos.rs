@@ -157,6 +157,12 @@ fn dispatch_native(native: NativeAction) {
         NativeAction::NextDesktop => next_desktop(),
         NativeAction::ShowDesktop => show_desktop(),
         NativeAction::LaunchpadShow => launchpad(),
+        NativeAction::AppSwitcher => {
+            // Balanced quick switch: press and immediately release the same
+            // held output the lifecycle drives, so a dispatcher without a
+            // release context leaves the system state exactly as it found it.
+            drop(super::press_hold_app_switcher());
+        }
         // Lock screen = Cmd+Ctrl+Q (kVK_ANSI_Q = 0x0C)
         NativeAction::LockScreen => post_key(0x0C, cmd | ctrl),
         // Screenshot = Cmd+Shift+3 (kVK_ANSI_3 = 0x14)
@@ -168,6 +174,13 @@ fn dispatch_native(native: NativeAction) {
         // sleepnow` works for the console user without privileges.
         NativeAction::Sleep => sleep_system(),
     }
+}
+
+/// Post the ⇥ tap that opens the application switcher. Posted after the
+/// hold's Command down-edge (see [`hold_keys`]); the tap carries the Command
+/// flag explicitly, like every synthesised chord event.
+pub(super) fn tap_app_switcher() {
+    post_key(0x30, CGEventFlags::CGEventFlagCommand); // kVK_Tab
 }
 
 fn nx_key(key: MediaKey) -> i32 {

@@ -187,6 +187,20 @@ pub enum Action {
     /// cancellation and shutdown. Dispatchers without a release context must
     /// degrade this action to a balanced tap rather than leave keys held.
     HoldShortcut(KeyCombo),
+    /// Show the macOS application switcher — the ⌘Tab HUD. Held open for the
+    /// lifetime of the physical button press (mirroring [`Action::HoldShortcut`]):
+    /// the press posts ⌘ down plus a single ⇥ tap, the wheel cycles the
+    /// selection while the switcher is open, and the terminal release posts
+    /// ⌘ up, committing the selection. A dispatcher without a release context
+    /// degrades to a balanced ⌘⇥ tap — a quick switch to the next application.
+    /// Linux and Windows hold Alt with the same ⇥ tap, which is their native
+    /// application-switcher chord.
+    ///
+    /// Assign this as a single action, not a gesture click: gesture buttons
+    /// fire their click one-shot at release (tapping the switcher closed
+    /// immediately), and wheel motion during a gesture hold belongs to the
+    /// swipe vocabulary instead of cycling the switcher.
+    AppSwitcher,
 }
 
 /// One step in a [`Action::Workflow`]. A workflow is a `Vec<WorkflowStep>`
@@ -259,6 +273,7 @@ macro_rules! for_each_unit_action {
             // Navigation
             MissionControl "Mission Control" "actions.mission_control" Navigation Grid,
             AppExpose "App Exposé" "actions.app_expose" Navigation Layers,
+            AppSwitcher "App Switcher" "actions.app_switcher" Navigation AppSwitcher,
             PreviousDesktop "Previous Desktop" "actions.previous_desktop" Navigation PreviousDesktop,
             NextDesktop "Next Desktop" "actions.next_desktop" Navigation NextDesktop,
             ShowDesktop "Show Desktop" "actions.show_desktop" Navigation Monitor,

@@ -58,6 +58,18 @@ fn hold_shortcut_roundtrips_toml() {
 }
 
 #[test]
+fn app_switcher_is_a_navigation_native_action() {
+    assert_eq!(Action::AppSwitcher.label(), "App Switcher");
+    assert_eq!(Action::AppSwitcher.category(), Category::Navigation);
+    assert_eq!(Action::AppSwitcher.held_combo(), None);
+    assert_matches!(
+        Action::AppSwitcher.effect(),
+        Effect::Native(NativeAction::AppSwitcher)
+    );
+    assert_eq!(roundtrip(&Action::AppSwitcher), Action::AppSwitcher);
+}
+
+#[test]
 fn power_user_action_labels_and_category() {
     assert_eq!(Action::TypeText("hi".into()).label(), "Type \"hi\"");
     assert_eq!(
@@ -335,6 +347,7 @@ fn persisted_action_variant_names_are_stable() {
     actual.sort();
     let mut expected = [
         "AppExpose",
+        "AppSwitcher",
         "BrowserBack",
         "BrowserForward",
         "CaptureRegion",
