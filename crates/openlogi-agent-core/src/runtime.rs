@@ -37,17 +37,37 @@ struct HeldShortcuts {
 
 impl HeldShortcuts {
     fn start(&mut self, press: &PressToken, action: &Action) -> bool {
-        let Some(combo) = action.held_combo() else {
+        let combo = action.held_combo();
+        if combo.is_none() && !matches!(action, Action::AppSwitcher) {
             return false;
-        };
+        }
         match self.by_press.entry(press.clone()) {
             std::collections::hash_map::Entry::Occupied(mut held) => {
-                held.get_mut().replace(combo);
+                match (held.get_mut().is_app_switcher(), combo) {
+                    // The switcher is already open for this press: keep it
+                    // without re-posting the opening Tab tap.
+                    (true, None) => {}
+                    // Chord → chord replaces without flickering shared keys.
+                    (false, Some(combo)) => held.get_mut().replace(combo),
+                    // Switching kinds: the new output presses its keys first
+                    // and the old one drops with the assignment, so keys
+                    // shared by both never flicker.
+                    (true, Some(combo)) => {
+                        *held.get_mut() = openlogi_inject::press_hold(combo);
+                    }
+                    (false, None) => {
+                        *held.get_mut() = openlogi_inject::press_hold_app_switcher();
+                    }
+                }
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert(openlogi_inject::press_hold(combo));
+                slot.insert(match combo {
+                    Some(combo) => openlogi_inject::press_hold(combo),
+                    None => openlogi_inject::press_hold_app_switcher(),
+                });
             }
         }
+
         true
     }
 
@@ -384,5 +404,44 @@ mod tests {
 
         assert!(!held.start(&press, &Action::Copy));
         held.end(&press);
+    }
+    #[test]
+    fn app_switcher_holds_for_the_press_and_survives_a_repeat_trigger() {
+        let press = PressToken::hook_for_test(1, ButtonId::Back);
+        let mut held = HeldShortcuts::default();
+
+        assert!(held.start(&press, &Action::AppSwitcher));
+        // A second trigger for the same press (a gesture step re-firing the
+        // hold action) must keep the switcher open instead of re-tapping Tab.
+        assert!(held.start(&press, &Action::AppSwitcher));
+        assert!(matches!(
+            held.by_press.get(&press),
+            Some(chord) if chord.is_app_switcher()
+        ));
+
+        held.end(&press);
+        assert!(!held.by_press.contains_key(&press));
+    }
+
+    #[test]
+    fn app_switcher_and_held_chords_replace_each_other_cleanly() {
+        let press = PressToken::hook_for_test(2, ButtonId::Back);
+        let chord = Action::HoldShortcut("Ctrl+Space".parse().expect("valid shortcut"));
+        let mut held = HeldShortcuts::default();
+
+        assert!(held.start(&press, &chord));
+        assert!(held.start(&press, &Action::AppSwitcher));
+        assert!(matches!(
+            held.by_press.get(&press),
+            Some(held) if held.is_app_switcher()
+        ));
+        assert!(held.start(&press, &chord));
+        assert!(matches!(
+            held.by_press.get(&press),
+            Some(held) if !held.is_app_switcher()
+        ));
+
+        held.end(&press);
+        assert!(!held.by_press.contains_key(&press));
     }
 }

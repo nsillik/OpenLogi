@@ -659,15 +659,19 @@ async fn protocol_mismatch_aborts_before_snapshot_or_output() {
     let agent = fixture_agent();
     let inspection = agent.clone();
     let mut connection = test_connection(agent).await;
-    connection.version = PROTOCOL_VERSION - 1;
+    let stale = PROTOCOL_VERSION - 1;
+    connection.version = stale;
 
     let error = capture_connected(args(output.clone(), None), connection)
         .await
         .expect_err("protocol mismatch must abort")
         .to_string();
 
-    assert!(error.contains("protocol v29"), "{error}");
-    assert!(error.contains("requires v30"), "{error}");
+    assert!(error.contains(&format!("protocol v{stale}")), "{error}");
+    assert!(
+        error.contains(&format!("requires v{PROTOCOL_VERSION}")),
+        "{error}"
+    );
     assert_eq!(*inspection.snapshots.lock().expect("snapshot lock"), 0);
     assert!(!output.exists());
 }
