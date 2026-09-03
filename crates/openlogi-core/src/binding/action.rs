@@ -423,7 +423,7 @@ pub enum HoldKind<'a> {
     Chord(&'a KeyCombo),
     /// The application switcher: the platform modifier is held down, opened
     /// with one Tab tap, and committed when the modifier releases.
-    Switcher,
+    AppSwitcher,
 }
 
 impl HoldKind<'_> {
@@ -441,7 +441,7 @@ impl Action {
     pub fn hold_kind(&self) -> HoldKind<'_> {
         match self {
             Self::HoldShortcut(combo) => HoldKind::Chord(combo),
-            Self::AppSwitcher => HoldKind::Switcher,
+            Self::AppSwitcher => HoldKind::AppSwitcher,
             _ => HoldKind::None,
         }
     }
