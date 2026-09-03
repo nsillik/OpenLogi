@@ -57,10 +57,8 @@ impl HeldShortcuts {
         match self.by_press.entry(press.clone()) {
             std::collections::hash_map::Entry::Occupied(mut held) => {
                 // A repeat trigger or rebind on the live press repoints the
-                // held output in place. `HeldChord::retarget` owns the whole
-                // kind-change matrix: shared keys stay silent, an open
-                // switcher commits before a chord sharing its modifier takes
-                // over, and the opening Tab tap posts exactly once.
+                // held output in place (`HeldChord::retarget` owns the edge
+                // ordering).
                 held.get_mut().retarget(kind);
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
