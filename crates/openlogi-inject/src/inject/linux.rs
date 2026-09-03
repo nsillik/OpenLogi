@@ -157,6 +157,8 @@ fn dispatch_native(action: &Action, native: NativeAction) {
         // Ctrl+Alt+←/→ is the default in GNOME and KDE.
         NativeAction::PreviousDesktop => press_key(&[ctrl, alt], KeyCode::KEY_LEFT),
         NativeAction::NextDesktop => press_key(&[ctrl, alt], KeyCode::KEY_RIGHT),
+        // Alt+Tab is the native application switcher in GNOME and KDE.
+        NativeAction::AppSwitcher => press_combo(&parse_shortcut("Alt+Tab")),
         // logind LockSession() via the system bus; falls back to Super+L.
         NativeAction::LockScreen => lock_screen(),
         // Region vs full-screen capture depends on the desktop environment's
@@ -167,6 +169,14 @@ fn dispatch_native(action: &Action, native: NativeAction) {
         // logind Suspend() via the system bus.
         NativeAction::Sleep => sleep_system(),
     }
+}
+
+/// Post the ⇥ tap that opens the application switcher. The hold's Alt
+/// down-edge has already been injected (see [`hold_keys`]); uinput key state
+/// is per-device, so the tap posts only the ⇥ edges.
+pub(super) fn tap_app_switcher() {
+    emit(&[key_ev(KeyCode::KEY_TAB, 1), syn()]);
+    emit(&[key_ev(KeyCode::KEY_TAB, 0), syn()]);
 }
 
 fn dispatch_script(script: Script<'_>) {
@@ -475,6 +485,9 @@ fn modifiers_to_keycodes(combo: &openlogi_core::binding::KeyCombo) -> Vec<KeyCod
 
 fn held_keycode(key: HeldKey) -> Option<KeyCode> {
     match key {
+        // Command is a macOS-only concept: its chords alias to Control
+        // upstream (see `held_keys`), and no Linux edge is ever posted for it.
+        HeldKey::Command => None,
         HeldKey::Control => Some(KeyCode::KEY_LEFTCTRL),
         HeldKey::Shift => Some(KeyCode::KEY_LEFTSHIFT),
         HeldKey::Alt => Some(KeyCode::KEY_LEFTALT),
