@@ -60,14 +60,12 @@ impl HeldShortcuts {
                     // The switcher is already open for this press: keep it
                     // without re-posting the opening Tab tap.
                     (true, None) => {}
-                    // Chord → chord replaces without flickering shared keys.
-                    (false, Some(combo)) => held.get_mut().replace(combo),
-                    // Switching kinds: the new output presses its keys first
-                    // and the old one drops with the assignment, so keys
-                    // shared by both never flicker.
-                    (true, Some(combo)) => {
-                        *held.get_mut() = openlogi_inject::press_hold(combo);
-                    }
+                    // Both replacements go through `HeldChord::replace`:
+                    // chord→chord keeps shared keys silent, and replacing an
+                    // open switcher commits it first (its modifier up-edge)
+                    // so a chord sharing the switcher modifier cannot extend
+                    // the hold.
+                    (true | false, Some(combo)) => held.get_mut().replace(combo),
                     (false, None) => {
                         *held.get_mut() = openlogi_inject::press_hold_app_switcher();
                     }
