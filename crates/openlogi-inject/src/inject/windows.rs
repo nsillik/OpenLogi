@@ -130,6 +130,8 @@ fn press_shortcut(shortcut: Shortcut) {
 fn dispatch_native(native: NativeAction) {
     match native {
         NativeAction::MissionControl | NativeAction::AppExpose => post_key(VK_TAB, &[VK_LWIN]),
+        // Alt+Tab is the native application switcher.
+        NativeAction::AppSwitcher => post_key(VK_TAB, &[VK_MENU]),
         NativeAction::PreviousDesktop => post_key(VK_LEFT, &[VK_LWIN, VK_CONTROL]),
         NativeAction::NextDesktop => post_key(VK_RIGHT, &[VK_LWIN, VK_CONTROL]),
         NativeAction::ShowDesktop => post_key(VK_D, &[VK_LWIN]),
@@ -147,6 +149,14 @@ fn dispatch_native(native: NativeAction) {
             tracing::debug!("Sleep has no Windows synthesis yet — action skipped");
         }
     }
+}
+
+/// Post the ⇥ tap that opens the application switcher. The hold's Alt
+/// down-edge has already been sent (see [`hold_keys`]); Windows tracks
+/// modifier state across `SendInput` calls, so the tap sends only the ⇥
+/// edges.
+pub(super) fn tap_app_switcher() {
+    post_key(VK_TAB, &[]);
 }
 
 fn dispatch_media(key: MediaKey) {

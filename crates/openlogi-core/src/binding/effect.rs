@@ -191,6 +191,8 @@ pub enum NativeAction {
     CaptureRegion,
     /// Put the computer to sleep.
     Sleep,
+    /// Show the application switcher (macOS ⌘Tab; Alt+Tab on Linux/Windows).
+    AppSwitcher,
 }
 
 /// A power-user scripting escape hatch, borrowed from the originating
@@ -243,6 +245,7 @@ impl Action {
 
             Action::MissionControl => Effect::Native(NativeAction::MissionControl),
             Action::AppExpose => Effect::Native(NativeAction::AppExpose),
+            Action::AppSwitcher => Effect::Native(NativeAction::AppSwitcher),
             Action::PreviousDesktop => Effect::Native(NativeAction::PreviousDesktop),
             Action::NextDesktop => Effect::Native(NativeAction::NextDesktop),
             Action::ShowDesktop => Effect::Native(NativeAction::ShowDesktop),

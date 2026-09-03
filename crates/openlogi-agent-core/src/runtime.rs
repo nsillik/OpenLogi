@@ -14,7 +14,7 @@ use std::io;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
-use openlogi_core::binding::{Action, Binding, ButtonId};
+use openlogi_core::binding::{Action, Binding, ButtonId, HoldKind};
 use openlogi_hid::{CaptureChannel, ChannelRegistry, DeviceIoGate};
 use tracing::{info, warn};
 
@@ -37,15 +37,23 @@ struct HeldShortcuts {
 
 impl HeldShortcuts {
     fn start(&mut self, press: &PressToken, action: &Action) -> bool {
-        let Some(combo) = action.held_combo() else {
+        let kind = action.hold_kind();
+        if !kind.is_held() {
             return false;
-        };
+        }
         match self.by_press.entry(press.clone()) {
             std::collections::hash_map::Entry::Occupied(mut held) => {
-                held.get_mut().replace(combo);
+                // A repeat trigger or rebind on the live press repoints the
+                // held output in place (`HeldChord::retarget` owns the edge
+                // ordering).
+                held.get_mut().retarget(kind);
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert(openlogi_inject::press_hold(combo));
+                slot.insert(match kind {
+                    HoldKind::Chord(combo) => openlogi_inject::press_hold(combo),
+                    HoldKind::AppSwitcher => openlogi_inject::press_hold_app_switcher(),
+                    HoldKind::None => unreachable!("non-held actions are refused above"),
+                });
             }
         }
         true
