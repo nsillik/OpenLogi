@@ -282,10 +282,10 @@ enum Retarget<'a> {
 #[must_use]
 fn retarget_plan(current: HeldKind, kind: HoldKind<'_>) -> Retarget<'_> {
     match (current, kind) {
-        (HeldKind::AppSwitcher, HoldKind::Switcher) => Retarget::Keep,
+        (HeldKind::AppSwitcher, HoldKind::AppSwitcher) => Retarget::Keep,
         (HeldKind::Chord, HoldKind::Chord(combo)) => Retarget::SwapToChord(combo),
         (HeldKind::AppSwitcher, HoldKind::Chord(combo)) => Retarget::CommitThenPressChord(combo),
-        (HeldKind::Chord, HoldKind::Switcher) => Retarget::OpenSwitcher,
+        (HeldKind::Chord, HoldKind::AppSwitcher) => Retarget::OpenSwitcher,
         (_, HoldKind::None) => unreachable!("non-held kinds never reach the hold map"),
     }
 }
@@ -868,13 +868,13 @@ mod tests {
         // Switcher → switcher: the opening Tab tap already posted — a repeat
         // trigger must not re-tap.
         assert_eq!(
-            super::retarget_plan(HeldKind::AppSwitcher, HoldKind::Switcher),
+            super::retarget_plan(HeldKind::AppSwitcher, HoldKind::AppSwitcher),
             Retarget::Keep
         );
         // Chord → switcher: press the modifier, tap, then release the keys
         // the chord held alone.
         assert_eq!(
-            super::retarget_plan(HeldKind::Chord, HoldKind::Switcher),
+            super::retarget_plan(HeldKind::Chord, HoldKind::AppSwitcher),
             Retarget::OpenSwitcher
         );
     }

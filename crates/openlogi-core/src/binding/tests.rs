@@ -67,7 +67,7 @@ fn hold_shortcut_roundtrips_toml() {
 fn app_switcher_is_a_held_navigation_native_action() {
     assert_eq!(Action::AppSwitcher.label(), "App Switcher");
     assert_eq!(Action::AppSwitcher.category(), Category::Navigation);
-    assert_eq!(Action::AppSwitcher.hold_kind(), HoldKind::Switcher);
+    assert_eq!(Action::AppSwitcher.hold_kind(), HoldKind::AppSwitcher);
     assert!(Action::AppSwitcher.hold_kind().is_held());
     assert_matches!(
         Action::AppSwitcher.effect(),
