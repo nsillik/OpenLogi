@@ -66,7 +66,7 @@ impl HeldShortcuts {
             std::collections::hash_map::Entry::Vacant(slot) => {
                 slot.insert(match kind {
                     HoldKind::Chord(combo) => openlogi_inject::press_hold(combo),
-                    HoldKind::Switcher => openlogi_inject::press_hold_app_switcher(),
+                    HoldKind::AppSwitcher => openlogi_inject::press_hold_app_switcher(),
                     HoldKind::None => unreachable!("non-held actions are refused above"),
                 });
             }
