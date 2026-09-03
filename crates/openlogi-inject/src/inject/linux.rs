@@ -485,9 +485,6 @@ fn modifiers_to_keycodes(combo: &openlogi_core::binding::KeyCombo) -> Vec<KeyCod
 
 fn held_keycode(key: HeldKey) -> Option<KeyCode> {
     match key {
-        // Command is a macOS-only concept: its chords alias to Control
-        // upstream (see `held_keys`), and no Linux edge is ever posted for it.
-        HeldKey::Command => None,
         HeldKey::Control => Some(KeyCode::KEY_LEFTCTRL),
         HeldKey::Shift => Some(KeyCode::KEY_LEFTSHIFT),
         HeldKey::Alt => Some(KeyCode::KEY_LEFTALT),

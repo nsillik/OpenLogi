@@ -416,8 +416,7 @@ fn handle_key(
     };
 
     info!(keycode, action = %action.label(), "key → executing bound action");
-    let lifecycle = action.held_combo().is_some() || matches!(action, Action::AppSwitcher);
-    let queued = if lifecycle {
+    let queued = if action.hold_kind().is_held() {
         let queued = dispatcher.try_hook_key_down(keycode, &action);
         if queued {
             HELD_KEYS.with_borrow_mut(|keys| {

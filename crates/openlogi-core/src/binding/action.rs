@@ -407,14 +407,42 @@ macro_rules! derive_action_core {
 
 for_each_unit_action!(derive_action_core);
 
-impl Action {
-    /// The chord whose output must remain down until the originating press
-    /// ends, or `None` for an instantaneous action.
+/// The held keyboard output an action owns for the lifetime of its physical
+/// press, if any.
+///
+/// Most actions fire once and own nothing. [`Action::HoldShortcut`] holds a
+/// chord until its press's terminal event; [`Action::AppSwitcher`] holds the
+/// platform's switcher modifier open the same way. The runtime admits every
+/// held kind through one release-on-terminal-event path, so a future held
+/// kind extends this enum instead of adding a `matches!` at each call site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoldKind<'a> {
+    /// No held keyboard state — the action fires once.
+    None,
+    /// A chord held for the press and released at its terminal event.
+    Chord(&'a KeyCombo),
+    /// The application switcher: the platform modifier is held down, opened
+    /// with one Tab tap, and committed when the modifier releases.
+    Switcher,
+}
+
+impl HoldKind<'_> {
+    /// Whether this kind owns press-lifecycle keyboard output.
     #[must_use]
-    pub fn held_combo(&self) -> Option<&KeyCombo> {
+    pub fn is_held(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
+impl Action {
+    /// The held keyboard output this action owns for its press's lifetime,
+    /// or [`HoldKind::None`] when the action fires once.
+    #[must_use]
+    pub fn hold_kind(&self) -> HoldKind<'_> {
         match self {
-            Self::HoldShortcut(combo) => Some(combo),
-            _ => None,
+            Self::HoldShortcut(combo) => HoldKind::Chord(combo),
+            Self::AppSwitcher => HoldKind::Switcher,
+            _ => HoldKind::None,
         }
     }
 }
