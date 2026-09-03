@@ -14,7 +14,8 @@ use std::io;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
-use openlogi_core::binding::{Action, Binding, ButtonId};
+use openlogi_core::binding::{Action, Binding, ButtonId, HoldKind, KeyCombo};
+use openlogi_inject::HeldKind;
 use tracing::{debug, info, warn};
 
 use self::button::{
@@ -48,37 +49,75 @@ struct HeldShortcuts {
     by_press: HashMap<PressToken, openlogi_inject::HeldChord>,
 }
 
-impl HeldShortcuts {
-    fn start(&mut self, press: &PressToken, action: &Action) -> bool {
-        let combo = action.held_combo();
-        if combo.is_none() && !matches!(action, Action::AppSwitcher) {
-            return false;
-        }
-        match self.by_press.entry(press.clone()) {
-            std::collections::hash_map::Entry::Occupied(mut held) => {
-                match (held.get_mut().is_app_switcher(), combo) {
-                    // The switcher is already open for this press: keep it
-                    // without re-posting the opening Tab tap.
-                    (true, None) => {}
-                    // Both replacements go through `HeldChord::replace`:
-                    // chord→chord keeps shared keys silent, and replacing an
-                    // open switcher commits it first (its modifier up-edge)
-                    // so a chord sharing the switcher modifier cannot extend
-                    // the hold.
-                    (true | false, Some(combo)) => held.get_mut().replace(combo),
-                    (false, None) => {
-                        *held.get_mut() = openlogi_inject::press_hold_app_switcher();
-                    }
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert(match combo {
-                    Some(combo) => openlogi_inject::press_hold(combo),
-                    None => openlogi_inject::press_hold_app_switcher(),
-                });
-            }
-        }
+/// What starting an action's hold does to a press that may already hold
+/// output — the pure kind-change matrix [`HeldShortcuts::start`] executes.
+///
+/// `current` is what the press already holds (`None` before its first
+/// hold); `kind` is what the action wants. Keeping this a pure decision
+/// makes the whole matrix unit-testable without synthesising input.
+#[derive(Debug, PartialEq, Eq)]
+enum HoldStart<'a> {
+    /// The action owns no held output — the press is not admitted.
+    Refuse,
+    /// The press held nothing: open the action's chord.
+    OpenChord(&'a KeyCombo),
+    /// The press held nothing: open the app switcher.
+    OpenSwitcher,
+    /// The app switcher is already open for this press: keep it without
+    /// re-posting the opening Tab tap.
+    KeepSwitcherOpen,
+    /// The press holds a chord or an open switcher: replace with the
+    /// action's chord.
+    ReplaceChord(&'a KeyCombo),
+    /// The press holds a chord: reopen as the app switcher.
+    ReopenAsSwitcher,
+}
 
+impl HeldShortcuts {
+    fn decide(current: Option<HeldKind>, kind: HoldKind<'_>) -> HoldStart<'_> {
+        match (current, kind) {
+            (_, HoldKind::None) => HoldStart::Refuse,
+            (None, HoldKind::Chord(combo)) => HoldStart::OpenChord(combo),
+            (None, HoldKind::Switcher) => HoldStart::OpenSwitcher,
+            (Some(HeldKind::Chord), HoldKind::Switcher) => HoldStart::ReopenAsSwitcher,
+            (Some(HeldKind::AppSwitcher), HoldKind::Switcher) => HoldStart::KeepSwitcherOpen,
+            (Some(_), HoldKind::Chord(combo)) => HoldStart::ReplaceChord(combo),
+        }
+    }
+
+    fn start(&mut self, press: &PressToken, action: &Action) -> bool {
+        let current = self
+            .by_press
+            .get(press)
+            .map(openlogi_inject::HeldChord::kind);
+        match Self::decide(current, action.hold_kind()) {
+            HoldStart::Refuse => return false,
+            HoldStart::OpenChord(combo) => {
+                self.by_press
+                    .insert(press.clone(), openlogi_inject::press_hold(combo));
+            }
+            HoldStart::OpenSwitcher => {
+                self.by_press
+                    .insert(press.clone(), openlogi_inject::press_hold_app_switcher());
+            }
+            HoldStart::KeepSwitcherOpen => {}
+            HoldStart::ReplaceChord(combo) => {
+                let Some(held) = self.by_press.get_mut(press) else {
+                    unreachable!("decide only replaces a held press");
+                };
+                held.replace(combo);
+            }
+            HoldStart::ReopenAsSwitcher => {
+                // The fresh hold presses the switcher modifier (keeping it
+                // down when the chord already held it) and taps Tab; the old
+                // chord drops with the assignment, releasing the keys only it
+                // held.
+                let Some(held) = self.by_press.get_mut(press) else {
+                    unreachable!("decide only reopens a held chord press");
+                };
+                *held = openlogi_inject::press_hold_app_switcher();
+            }
+        }
         true
     }
 
@@ -625,43 +664,63 @@ mod tests {
             Some(newer)
         );
 
-    #[test]
-    fn app_switcher_holds_for_the_press_and_survives_a_repeat_trigger() {
-        let press = PressToken::hook_for_test(1, ButtonId::Back);
-        let mut held = HeldShortcuts::default();
-
-        assert!(held.start(&press, &Action::AppSwitcher));
-        // A second trigger for the same press (a gesture step re-firing the
-        // hold action) must keep the switcher open instead of re-tapping Tab.
-        assert!(held.start(&press, &Action::AppSwitcher));
-        assert!(matches!(
-            held.by_press.get(&press),
-            Some(chord) if chord.is_app_switcher()
-        ));
-
-        held.end(&press);
-        assert!(!held.by_press.contains_key(&press));
+    fn chord(label: &str) -> KeyCombo {
+        label.parse().expect("test shortcut must be valid")
     }
 
     #[test]
-    fn app_switcher_and_held_chords_replace_each_other_cleanly() {
-        let press = PressToken::hook_for_test(2, ButtonId::Back);
-        let chord = Action::HoldShortcut("Ctrl+Space".parse().expect("valid shortcut"));
-        let mut held = HeldShortcuts::default();
+    fn non_held_actions_are_refused_for_fresh_and_held_presses() {
+        let copy = Action::Copy.hold_kind();
+        assert_eq!(HeldShortcuts::decide(None, copy), HoldStart::Refuse);
+        assert_eq!(
+            HeldShortcuts::decide(Some(HeldKind::Chord), copy),
+            HoldStart::Refuse
+        );
+        assert_eq!(
+            HeldShortcuts::decide(Some(HeldKind::AppSwitcher), copy),
+            HoldStart::Refuse
+        );
+    }
 
-        assert!(held.start(&press, &chord));
-        assert!(held.start(&press, &Action::AppSwitcher));
-        assert!(matches!(
-            held.by_press.get(&press),
-            Some(held) if held.is_app_switcher()
-        ));
-        assert!(held.start(&press, &chord));
-        assert!(matches!(
-            held.by_press.get(&press),
-            Some(held) if !held.is_app_switcher()
-        ));
+    #[test]
+    fn a_fresh_press_opens_its_hold_kind() {
+        let combo = chord("Ctrl+Space");
+        let chord_action = Action::HoldShortcut(combo.clone());
+        let switcher = Action::AppSwitcher;
+        assert_eq!(
+            HeldShortcuts::decide(None, chord_action.hold_kind()),
+            HoldStart::OpenChord(&combo)
+        );
+        assert_eq!(
+            HeldShortcuts::decide(None, switcher.hold_kind()),
+            HoldStart::OpenSwitcher
+        );
+    }
 
-        held.end(&press);
-        assert!(!held.by_press.contains_key(&press));
+    #[test]
+    fn held_presses_replace_reopen_or_keep_by_kind() {
+        let combo = chord("Ctrl+Space");
+        let chord_action = Action::HoldShortcut(combo.clone());
+        let switcher = Action::AppSwitcher;
+
+        // A chord (or an open switcher) is replaced with the new chord.
+        assert_eq!(
+            HeldShortcuts::decide(Some(HeldKind::Chord), chord_action.hold_kind()),
+            HoldStart::ReplaceChord(&combo)
+        );
+        assert_eq!(
+            HeldShortcuts::decide(Some(HeldKind::AppSwitcher), chord_action.hold_kind()),
+            HoldStart::ReplaceChord(&combo)
+        );
+        // A chord press re-opens as the switcher.
+        assert_eq!(
+            HeldShortcuts::decide(Some(HeldKind::Chord), switcher.hold_kind()),
+            HoldStart::ReopenAsSwitcher
+        );
+        // The already-open switcher stays without re-tapping Tab.
+        assert_eq!(
+            HeldShortcuts::decide(Some(HeldKind::AppSwitcher), switcher.hold_kind()),
+            HoldStart::KeepSwitcherOpen
+        );
     }
 }

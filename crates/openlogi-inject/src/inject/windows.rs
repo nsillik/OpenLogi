@@ -287,9 +287,6 @@ pub(super) fn hold_keys(keys: &[HeldKey], phase: KeyPhase) {
 
 fn held_virtual_key(key: HeldKey) -> Option<u16> {
     match key {
-        // Command is a macOS-only concept: its chords alias to Control
-        // upstream (see `held_keys`), and no Windows edge is ever posted for it.
-        HeldKey::Command => None,
         HeldKey::Control => Some(VK_CONTROL),
         HeldKey::Shift => Some(VK_SHIFT),
         HeldKey::Alt => Some(VK_MENU),

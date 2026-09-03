@@ -44,15 +44,12 @@ enum KeyPhase {
 ///
 /// Logical Cmd and Ctrl are distinct on macOS. Cmd aliases Ctrl on Linux and
 /// Windows, so ownership is counted after that platform mapping is resolved;
-/// [`HeldKey::Command`] itself only ever has edges posted on macOS.
+/// Command itself only ever has edges posted on macOS.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum HeldKey {
     // macOS-only concept: chords carrying Command alias to Control upstream
     // on Linux and Windows (see `held_keys`), so nothing constructs it there.
-    #[cfg_attr(
-        not(target_os = "macos"),
-        expect(dead_code, reason = "only macOS posts Command edges")
-    )]
+    #[cfg(target_os = "macos")]
     Command,
     Control,
     Shift,
@@ -162,22 +159,6 @@ impl HeldOutput {
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 static HELD_OUTPUT: LazyLock<Mutex<HeldOutput>> =
     LazyLock::new(|| Mutex::new(HeldOutput::default()));
-
-/// Unit tests record the held-output edge plan here instead of posting real
-/// platform events (see the test seam in `hold_transition`).
-#[cfg(all(
-    test,
-    any(target_os = "linux", target_os = "macos", target_os = "windows")
-))]
-static TEST_EDGES: LazyLock<Mutex<Vec<HoldTransition>>> = LazyLock::new(|| Mutex::new(Vec::new()));
-
-/// Serializes tests that drive the held-output state through
-/// `hold_transition`.
-#[cfg(all(
-    test,
-    any(target_os = "linux", target_os = "macos", target_os = "windows")
-))]
-static TEST_EDGES_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn held_keys(combo: &KeyCombo) -> Vec<HeldKey> {
     let mut keys = Vec::with_capacity(4);
@@ -314,6 +295,54 @@ pub fn execute(action: &Action) {
     }
 }
 
+/// The kind of held keyboard output a [`HeldChord`] owns.
+///
+/// The kind selects how a hold opens and how kind-change replacements are
+/// ordered; every kind still releases through the same drop path. A future
+/// held output (media hold, repeat hold, …) extends this enum and its
+/// constructor rather than adding another flag to [`HeldChord`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeldKind {
+    /// A held chord ([`press_hold`]).
+    Chord,
+    /// The held application switcher ([`press_hold_app_switcher`]).
+    AppSwitcher,
+}
+
+/// The transition schedule a held-output replacement posts, in posting
+/// order.
+///
+/// A chord replacing a chord is one combined transition, so keys shared by
+/// both never see an edge. An open application switcher commits on its
+/// modifier's up-edge, so replacing one must release first and press the
+/// replacement afterwards: a combined transition would keep a shared
+/// modifier down and extend the switcher hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Replacement<'a> {
+    /// Release `old` and press `new` in one combined transition.
+    Combined {
+        old: &'a [HeldKey],
+        new: &'a [HeldKey],
+    },
+    /// Release `old` — committing an open switcher — then press `new`.
+    CommitThenPress {
+        old: &'a [HeldKey],
+        new: &'a [HeldKey],
+    },
+}
+
+/// The schedule for replacing the held output of kind `old_kind` with
+/// `new` keys. Pure so the ordering contract is unit-testable without
+/// synthesising input.
+#[must_use]
+fn replacement<'a>(old_kind: HeldKind, old: &'a [HeldKey], new: &'a [HeldKey]) -> Replacement<'a> {
+    if old_kind == HeldKind::AppSwitcher {
+        Replacement::CommitThenPress { old, new }
+    } else {
+        Replacement::Combined { old, new }
+    }
+}
+
 /// One synthetic held keyboard output, released exactly once when dropped.
 ///
 /// Keep this value with the physical press lifecycle. Replacing its chord
@@ -322,7 +351,7 @@ pub fn execute(action: &Action) {
 #[must_use = "dropping the held output immediately releases its synthetic keys"]
 pub struct HeldChord {
     keys: Vec<HeldKey>,
-    app_switcher: bool,
+    kind: HeldKind,
 }
 
 impl HeldChord {
@@ -335,22 +364,24 @@ impl HeldChord {
     /// extend the switcher hold.
     pub fn replace(&mut self, combo: &KeyCombo) {
         let keys = held_keys(combo);
-        let old = std::mem::replace(&mut self.keys, keys);
-        let was_switcher = self.app_switcher;
-        self.app_switcher = false;
-        if was_switcher {
-            hold_transition(Some(&old), None);
-            hold_transition(None, Some(&self.keys));
-        } else {
-            hold_transition(Some(&old), Some(&self.keys));
+        let old_keys = std::mem::replace(&mut self.keys, keys);
+        let old_kind = self.kind;
+        self.kind = HeldKind::Chord;
+        match replacement(old_kind, &old_keys, &self.keys) {
+            Replacement::Combined { old, new } => {
+                hold_transition(Some(old), Some(new));
+            }
+            Replacement::CommitThenPress { old, new } => {
+                hold_transition(Some(old), None);
+                hold_transition(None, Some(new));
+            }
         }
     }
 
-    /// Whether this output holds the application switcher open (see
-    /// [`press_hold_app_switcher`]).
+    /// The kind of held output this chord owns (see [`HeldKind`]).
     #[must_use]
-    pub fn is_app_switcher(&self) -> bool {
-        self.app_switcher
+    pub fn kind(&self) -> HeldKind {
+        self.kind
     }
 }
 
@@ -369,7 +400,7 @@ pub fn press_hold(combo: &KeyCombo) -> HeldChord {
     // platform backend still balances any ownership transition it completed.
     let held = HeldChord {
         keys: held_keys(combo),
-        app_switcher: false,
+        kind: HeldKind::Chord,
     };
     hold_transition(None, Some(&held.keys));
     held
@@ -399,7 +430,7 @@ fn app_switcher_hold_keys() -> &'static [HeldKey] {
 pub fn press_hold_app_switcher() -> HeldChord {
     let held = HeldChord {
         keys: app_switcher_hold_keys().to_vec(),
-        app_switcher: true,
+        kind: HeldKind::AppSwitcher,
     };
     hold_transition(None, Some(&held.keys));
     tap_app_switcher();
@@ -417,34 +448,7 @@ fn tap_app_switcher() {
     }
 }
 
-/// Test seam for [`hold_transition`]: advance the same ownership state and
-/// record the computed edges in posting order instead of posting real
-/// platform events.
-#[cfg(all(
-    test,
-    any(target_os = "linux", target_os = "macos", target_os = "windows")
-))]
-fn record_hold_transition(released: Option<&[HeldKey]>, pressed: Option<&[HeldKey]>) -> bool {
-    let transition = HELD_OUTPUT
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .transition(released, pressed);
-    TEST_EDGES
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push(transition);
-    true
-}
-
 fn hold_transition(released: Option<&[HeldKey]>, pressed: Option<&[HeldKey]>) {
-    #[cfg(all(
-        test,
-        any(target_os = "linux", target_os = "macos", target_os = "windows")
-    ))]
-    if record_hold_transition(released, pressed) {
-        return;
-    }
-
     cfg_select! {
         target_os = "macos" => {
             let mut output = HELD_OUTPUT.lock().unwrap_or_else(PoisonError::into_inner);
@@ -711,28 +715,6 @@ mod tests {
         super::held_keys(combo)
     }
 
-    /// Serializes against other held-output tests and resets the recording.
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    fn reset_recorded_edges() -> std::sync::MutexGuard<'static, ()> {
-        let guard = super::TEST_EDGES_GUARD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        super::TEST_EDGES
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
-        guard
-    }
-
-    /// Takes everything recorded since the last reset, in posting order.
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    fn take_recorded_edges() -> Vec<HoldTransition> {
-        let mut edges = super::TEST_EDGES
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        std::mem::take(&mut *edges)
-    }
-
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[test]
     fn shared_control_stays_down_until_its_last_chord_ends() {
@@ -910,71 +892,69 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[test]
-    fn replacing_a_held_chord_keeps_shared_keys_silent() {
-        let _serial = reset_recorded_edges();
-        let old = combo("Ctrl+A");
-        let new = combo("Ctrl+D");
-        let mut held = super::press_hold(&old);
+    fn chord_replacements_post_one_combined_transition() {
+        let old = keys(&combo("Ctrl+A"));
+        let new = keys(&combo("Ctrl+D"));
 
-        held.replace(&new);
-
+        // A chord replacing a chord is one combined transition: keys shared
+        // by both release and press in the same posting, so they never see
+        // an edge (the edge math is covered by
+        // `replacement_preserves_shared_physical_outputs`).
         assert_eq!(
-            take_recorded_edges(),
-            vec![
-                // The hold opens.
-                HoldTransition {
-                    up: vec![],
-                    down: keys(&old),
-                },
-                // Replacement swaps only the non-shared keys.
-                HoldTransition {
-                    up: vec![HeldKey::Key(old.key())],
-                    down: vec![HeldKey::Key(new.key())],
-                },
-            ]
+            super::replacement(super::HeldKind::Chord, &old, &new),
+            super::Replacement::Combined {
+                old: &old,
+                new: &new,
+            }
         );
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[test]
-    fn replacing_a_held_switcher_commits_it_before_pressing_the_replacement() {
-        let _serial = reset_recorded_edges();
+    fn replacing_an_open_switcher_commits_it_before_pressing_the_replacement() {
         // A chord sharing the platform's switcher modifier is exactly the
         // replacement that must not extend the switcher hold.
+        let old = super::app_switcher_hold_keys().to_vec();
         #[cfg(target_os = "macos")]
         let replacement = combo("Cmd+B");
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         let replacement = combo("Alt+F4");
-        // What `press_hold_app_switcher` posts before its Tab tap (the tap
-        // itself posts real events, so the fixture posts the hold directly).
-        let mut held = super::HeldChord {
-            keys: super::app_switcher_hold_keys().to_vec(),
-            app_switcher: true,
-        };
-        super::hold_transition(None, Some(&held.keys));
+        let new = keys(&replacement);
 
-        held.replace(&replacement);
-
+        // The open switcher commits on its modifier's up-edge, so replacing
+        // it must release first and press the chord afterwards — a combined
+        // transition would keep the shared modifier down and extend the hold.
         assert_eq!(
-            take_recorded_edges(),
-            vec![
-                // The hold opens.
-                HoldTransition {
-                    up: vec![],
-                    down: super::app_switcher_hold_keys().to_vec(),
-                },
-                // The switcher commits first: its modifier goes up, the edge
-                // the native HUD commits on.
-                HoldTransition {
-                    up: super::app_switcher_hold_keys().to_vec(),
-                    down: vec![],
-                },
-                // Only then does the replacement chord press its keys.
-                HoldTransition {
-                    up: vec![],
-                    down: keys(&replacement),
-                },
-            ]
+            super::replacement(super::HeldKind::AppSwitcher, &old, &new),
+            super::Replacement::CommitThenPress {
+                old: &old,
+                new: &new,
+            }
+        );
+
+        // The schedule that replacement posts against one physical state:
+        // the switcher opens, its release commits it, then the chord presses.
+        let mut output = HeldOutput::default();
+        assert_eq!(
+            output.transition(None, Some(&old)),
+            HoldTransition {
+                up: vec![],
+                down: old.clone(),
+            }
+        );
+        assert_eq!(
+            output.transition(Some(&old), None),
+            HoldTransition {
+                up: old.clone(),
+                down: vec![],
+            }
+        );
+        assert_eq!(
+            output.transition(None, Some(&new)),
+            HoldTransition {
+                up: vec![],
+                down: new,
+            }
         );
     }
 
