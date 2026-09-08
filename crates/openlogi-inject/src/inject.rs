@@ -319,8 +319,10 @@ enum HeldKind {
 /// modifier's up-edge, so leaving it must release first and press the
 /// replacement afterwards: a combined transition would keep the shared
 /// modifier down and extend the switcher hold. Opening the switcher from a
-/// chord presses its modifier (keeping a shared modifier down), taps the
-/// opening Tab, and only then releases the keys the chord held alone.
+/// chord presses its modifier (keeping a shared modifier down), releases
+/// the keys the chord held alone, and only then taps the opening Tab: a
+/// leftover chord key under the tap would change its chord (⇧⇥ cycles the
+/// switcher backwards).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Retarget<'a> {
     /// The press already holds the requested output — no edges, no re-tap.
@@ -330,7 +332,8 @@ enum Retarget<'a> {
     /// Release the current keys (committing an open switcher), then press
     /// `combo`.
     CommitThenPressChord(&'a KeyCombo),
-    /// Press the switcher modifier, tap Tab, then release the current keys.
+    /// Press the switcher modifier, release the current keys, then tap ⇥ —
+    /// the tap must not fire over a stale chord key.
     OpenSwitcher,
 }
 
@@ -366,7 +369,7 @@ impl HeldChord {
     /// and new outputs never see an edge, an open switcher commits (its
     /// modifier up-edge) before a chord that shares the modifier can take
     /// over, and the switcher's opening Tab tap posts exactly once per time
-    /// it opens.
+    /// it opens, only after the outgoing chord's leftover keys are up.
     pub fn retarget(&mut self, kind: HoldKind<'_>) {
         match retarget_plan(self.kind, kind) {
             Retarget::Keep => {}
@@ -383,17 +386,32 @@ impl HeldChord {
                 hold_transition(None, Some(&self.keys));
             }
             Retarget::OpenSwitcher => {
-                self.kind = HeldKind::AppSwitcher;
-                let keys = app_switcher_hold_keys().to_vec();
-                let old_keys = std::mem::replace(&mut self.keys, keys);
-                // Open the switcher first — a modifier the chord already held
-                // stays down across the fresh press — then release the keys
-                // the chord held alone.
-                hold_transition(None, Some(&self.keys));
-                tap_app_switcher();
-                hold_transition(Some(&old_keys), None);
+                self.open_switcher_from_chord(hold_transition, tap_app_switcher);
             }
         }
+    }
+
+    /// Repoints this held chord at the open application switcher.
+    ///
+    /// The switcher modifier goes down first — a modifier the outgoing chord
+    /// already held stays down across the fresh press, because ownership
+    /// counting posts no edge for its second owner. The chord's leftover
+    /// keys come up next, and only then does the ⇥ tap open the switcher: a
+    /// stale key under the tap would change its chord (⇧⇥ cycles the
+    /// switcher backwards). `transition` and `tap` are parameterized so
+    /// tests can observe the schedule without posting real edges;
+    /// production passes [`hold_transition`] and [`tap_app_switcher`].
+    fn open_switcher_from_chord(
+        &mut self,
+        transition: impl Fn(Option<&[HeldKey]>, Option<&[HeldKey]>),
+        tap: impl FnOnce(),
+    ) {
+        self.kind = HeldKind::AppSwitcher;
+        let keys = app_switcher_hold_keys().to_vec();
+        let old_keys = std::mem::replace(&mut self.keys, keys);
+        transition(None, Some(&self.keys));
+        transition(Some(&old_keys), None);
+        tap();
     }
 }
 
@@ -974,6 +992,83 @@ mod tests {
             HoldTransition {
                 up: vec![],
                 down: new,
+            }
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn opening_the_switcher_from_a_chord_releases_its_keys_before_the_tap() {
+        use std::cell::RefCell;
+
+        // The outgoing chord shares the switcher modifier and also holds ⇧
+        // and a key of its own. Any of those still down under the opening
+        // tap changes its chord: ⇧⇥ cycles the switcher backwards instead
+        // of opening it forward.
+        #[cfg(target_os = "macos")]
+        let old = keys(&combo("Cmd+Shift+L"));
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        let old = keys(&combo("Alt+Shift+L"));
+        let switcher = super::app_switcher_hold_keys().to_vec();
+
+        let mut held = super::HeldChord {
+            keys: old.clone(),
+            kind: HeldKind::Chord,
+        };
+
+        let posts: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
+        let output: RefCell<HeldOutput> = RefCell::new(HeldOutput::default());
+        // The chord is live: its keys, the shared modifier included, are
+        // already down when the rebind retargets the press.
+        output.borrow_mut().transition(None, Some(&old));
+        let transition = |released: Option<&[HeldKey]>, pressed: Option<&[HeldKey]>| {
+            let edges = output.borrow_mut().transition(released, pressed);
+            let mut log = posts.borrow_mut();
+            match (released.is_some(), pressed.is_some()) {
+                (false, true) => {
+                    // The shared modifier is already down: the switcher's
+                    // press must post no edge at all.
+                    log.push("press");
+                    assert_eq!(
+                        edges,
+                        HoldTransition {
+                            up: vec![],
+                            down: vec![]
+                        }
+                    );
+                }
+                (true, false) => {
+                    // The chord's leftover keys come up; the shared modifier
+                    // (now the switcher's) stays down.
+                    log.push("release");
+                    assert_eq!(
+                        edges,
+                        HoldTransition {
+                            up: old
+                                .iter()
+                                .filter(|key| !switcher.contains(key))
+                                .copied()
+                                .collect(),
+                            down: vec![],
+                        }
+                    );
+                }
+                (true, true) => log.push("swap"),
+                (false, false) => {}
+            }
+        };
+        let tap = || posts.borrow_mut().push("tap");
+
+        held.open_switcher_from_chord(transition, tap);
+
+        assert_eq!(*posts.borrow(), ["press", "release", "tap"]);
+        // The switcher modifier is the only thing left down; releasing it
+        // commits the switcher exactly once.
+        assert_eq!(
+            output.borrow_mut().transition(Some(&switcher), None),
+            HoldTransition {
+                up: switcher,
+                down: vec![],
             }
         );
     }
