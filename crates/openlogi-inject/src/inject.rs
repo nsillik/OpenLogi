@@ -870,7 +870,10 @@ mod tests {
     #[test]
     fn retargeting_an_open_switcher_at_a_chord_commits_it_first() {
         let switcher = HoldKind::AppSwitcher;
-        let chord = HoldKind::Chord(combo("Cmd+Shift+L"));
+        // Carries both primary modifiers, so the chord holds whatever key this
+        // platform's switcher holds: Cmd aliases Control on Linux and Windows,
+        // where the switcher holds Alt instead.
+        let chord = HoldKind::Chord(combo("Cmd+Alt+Shift+L"));
         assert!(
             held_keys(&chord)
                 .iter()
@@ -901,7 +904,7 @@ mod tests {
     #[test]
     fn opening_the_switcher_taps_after_the_batch_that_frees_its_modifier() {
         let switcher = HoldKind::AppSwitcher;
-        let chord = HoldKind::Chord(combo("Cmd+Shift+L"));
+        let chord = HoldKind::Chord(combo("Cmd+Alt+Shift+L"));
 
         // One batch — the modifier the chord already holds keeps its down edge
         // — and the ⇥ tap after it, never over the keys only the chord held.
