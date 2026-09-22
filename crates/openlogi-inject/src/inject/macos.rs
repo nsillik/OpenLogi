@@ -10,7 +10,8 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex, PoisonError};
 
 use openlogi_core::binding::{
-    Action, Effect, KeyCombo, KeyboardUsage, MediaKey, MouseButton, NativeAction, Shortcut,
+    Action, Effect, HoldKind, KeyCombo, KeyboardUsage, MediaKey, MouseButton, NativeAction,
+    Shortcut,
 };
 use openlogi_core::config::FunctionKey;
 
@@ -109,6 +110,8 @@ pub(super) fn execute(action: &Action) {
         }
         Effect::Shortcut(shortcut) => press_combo(&combo(shortcut)),
         Effect::Key(combo) | Effect::HeldKey(combo) => press_combo(combo),
+        // No release context to hold the switcher open: open and commit it.
+        Effect::AppSwitcher => drop(super::press_hold(HoldKind::AppSwitcher)),
         Effect::Scroll { dx, dy } => dispatch_scroll(dx, dy),
         // Media/volume controls are NX system-defined keys, not ordinary
         // keyboard virtual-key events. Posting kVK_Volume* through
@@ -450,6 +453,15 @@ pub(super) fn hold_keys(
         }
     }
     modifiers
+}
+
+/// Post the ⇥ tap that opens the application switcher.
+///
+/// Every synthesised event carries the flags of its chord, so Command is
+/// spelled out here even though its down edge was posted by [`hold_keys`]:
+/// the switcher is what the tap's flags say it is.
+pub(super) fn tap_app_switcher() {
+    post_key(0x30, CGEventFlags::CGEventFlagCommand); // kVK_Tab
 }
 
 fn post_held_key(key: HeldKey, phase: KeyPhase, modifiers: &mut HeldModifiers) {
