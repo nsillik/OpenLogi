@@ -503,9 +503,10 @@ pub fn start(
             }
         }
         // Function-key remapper: ordinary actions remain one-shot, while a
-        // HoldShortcut enters the same down/up/cancel lifecycle as a mouse
-        // button. The active set pairs key-up even if modifier state or config
-        // changes while the key is down.
+        // held output (`HoldShortcut`, `AppSwitcher`) enters the same
+        // down/up/cancel lifecycle as a mouse button. The active set pairs
+        // key-up even if modifier state or config changes while the key is
+        // down.
         HookEvent::Key(event) => handle_key(
             event,
             &keyboard_bindings,

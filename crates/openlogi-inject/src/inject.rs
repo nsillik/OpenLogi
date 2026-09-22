@@ -333,8 +333,10 @@ pub fn execute(action: &Action) {
 ///
 /// Keep this value with the physical press lifecycle. Repointing it at another
 /// output ([`HeldOutput::retarget`]) preserves the physical keys the two
-/// outputs share; cancellation, shutdown, and unwinding all release the current
-/// output through [`Drop`].
+/// outputs share, with one exception: repointing an open switcher at a chord
+/// releases the switcher's modifier first, because that up edge is what commits
+/// the switcher — see `retarget_steps`. Cancellation, shutdown, and unwinding
+/// all release the current output through [`Drop`].
 #[must_use = "dropping the held output immediately releases its synthetic keys"]
 pub struct HeldOutput {
     kind: HoldKind,
