@@ -334,11 +334,16 @@ pub(super) fn hold_keys(
 
 /// Post the ⇥ tap that opens the application switcher.
 ///
-/// Every synthesised event carries the flags of its chord, so Command is
-/// spelled out here even though its down edge was posted by [`hold_keys`]:
-/// the switcher is what the tap's flags say it is.
+/// Every synthesised event carries the flags of its chord, so the switcher's
+/// modifier is spelled out here even though its down edge was posted by
+/// [`hold_keys`]: the switcher is what the tap's flags say it is. Which key
+/// that is comes from [`super::SWITCHER_KEYS`], the one site that decides it.
 pub(super) fn tap_app_switcher() {
-    post_key(0x30, CGEventFlags::CGEventFlagCommand); // kVK_Tab
+    let mut held = HeldModifiers::default();
+    for modifier in super::SWITCHER_KEYS {
+        held.set(*modifier, true);
+    }
+    post_key(0x30, held_modifier_flags(held)); // kVK_Tab
 }
 
 fn post_held_key(key: HeldKey, phase: KeyPhase, modifiers: &mut HeldModifiers) {

@@ -160,27 +160,33 @@ impl HeldKeyOwners {
 static HELD_KEY_OWNERS: LazyLock<Mutex<HeldKeyOwners>> =
     LazyLock::new(|| Mutex::new(HeldKeyOwners::default()));
 
+/// The physical keys the platform's application switcher owns.
+///
+/// Command on macOS — the ⌘Tab switcher commits when ⌘ comes up — and Alt on
+/// Linux and Windows, whose native switcher is Alt+Tab; a ⇥ tap under this
+/// modifier is what opens it. macOS reads the modifier from here rather than
+/// restating which key this platform's switcher uses, and the slice is empty on
+/// a target with no switcher to open.
+const SWITCHER_KEYS: &[HeldKey] = cfg_select! {
+    target_os = "macos" => {
+        &[HeldKey::Command]
+    }
+    target_os = "linux" => {
+        &[HeldKey::Alt]
+    }
+    target_os = "windows" => {
+        &[HeldKey::Alt]
+    }
+    _ => {
+        &[]
+    }
+};
+
 /// The physical keys one held output owns.
 fn held_keys(kind: &HoldKind) -> Vec<HeldKey> {
     match kind {
         HoldKind::Chord(combo) => chord_keys(combo),
-        // The platform's switcher modifier: Command on macOS (the ⌘Tab
-        // switcher commits when ⌘ comes up), Alt on Linux and Windows (their
-        // native Alt+Tab).
-        HoldKind::AppSwitcher => cfg_select! {
-            target_os = "macos" => {
-                vec![HeldKey::Command]
-            }
-            target_os = "linux" => {
-                vec![HeldKey::Alt]
-            }
-            target_os = "windows" => {
-                vec![HeldKey::Alt]
-            }
-            _ => {
-                Vec::new()
-            }
-        },
+        HoldKind::AppSwitcher => SWITCHER_KEYS.to_vec(),
     }
 }
 
