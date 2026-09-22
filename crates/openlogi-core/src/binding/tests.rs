@@ -46,14 +46,25 @@ fn hold_shortcut_has_distinct_lifecycle_semantics() {
 
     assert_eq!(held.label(), "Hold Alt+Space");
     assert_eq!(held.category(), Category::Editing);
-    assert_eq!(held.held_combo(), Some(&combo));
+    assert_eq!(held.hold_kind(), Some(HoldKind::Chord(combo.clone())));
     assert_matches!(held.effect(), Effect::HeldKey(actual) if actual == &combo);
-    assert_eq!(Action::CustomShortcut(combo).held_combo(), None);
+    assert_eq!(Action::CustomShortcut(combo).hold_kind(), None);
 }
 
 #[test]
 fn hold_shortcut_roundtrips_toml() {
     let action = Action::HoldShortcut("Alt+Space".parse().expect("valid shortcut failed"));
+    assert_eq!(roundtrip(&action), action);
+}
+
+#[test]
+fn app_switcher_is_a_held_navigation_action() {
+    let action = Action::AppSwitcher;
+
+    assert_eq!(action.label(), "App Switcher");
+    assert_eq!(action.category(), Category::Navigation);
+    assert_eq!(action.hold_kind(), Some(HoldKind::AppSwitcher));
+    assert_matches!(action.effect(), Effect::AppSwitcher);
     assert_eq!(roundtrip(&action), action);
 }
 
@@ -335,6 +346,7 @@ fn persisted_action_variant_names_are_stable() {
     actual.sort();
     let mut expected = [
         "AppExpose",
+        "AppSwitcher",
         "BrowserBack",
         "BrowserForward",
         "CaptureRegion",

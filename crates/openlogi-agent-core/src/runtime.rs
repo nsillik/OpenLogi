@@ -45,20 +45,22 @@ impl ActionDispatchTarget {
 /// RAII path.
 #[derive(Default)]
 struct HeldShortcuts {
-    by_press: HashMap<PressToken, openlogi_inject::HeldChord>,
+    by_press: HashMap<PressToken, openlogi_inject::HeldOutput>,
 }
 
 impl HeldShortcuts {
     fn start(&mut self, press: &PressToken, action: &Action) -> bool {
-        let Some(combo) = action.held_combo() else {
+        let Some(kind) = action.hold_kind() else {
             return false;
         };
         match self.by_press.entry(press.clone()) {
             std::collections::hash_map::Entry::Occupied(mut held) => {
-                held.get_mut().replace(combo);
+                // A repeat trigger or a per-app rebind that re-fires the hold
+                // repoints the live press's output in place.
+                held.get_mut().retarget(kind);
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert(openlogi_inject::press_hold(combo));
+                slot.insert(openlogi_inject::press_hold(kind));
             }
         }
         true

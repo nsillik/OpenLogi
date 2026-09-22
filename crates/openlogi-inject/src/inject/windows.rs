@@ -12,7 +12,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 
 use openlogi_core::binding::{
-    Action, Effect, KeyCombo, MediaKey, MouseButton, NativeAction, Shortcut,
+    Action, Effect, HoldKind, KeyCombo, MediaKey, MouseButton, NativeAction, Shortcut,
 };
 use openlogi_core::scroll::ScrollDelta;
 
@@ -59,6 +59,8 @@ pub(super) fn execute(action: &Action) {
         Effect::Click(button) => post_click(button),
         Effect::Shortcut(shortcut) => press_shortcut(shortcut),
         Effect::Key(combo) | Effect::HeldKey(combo) => press_combo(combo),
+        // No release context to hold the switcher open: open and commit it.
+        Effect::AppSwitcher => drop(super::press_hold(HoldKind::AppSwitcher)),
         Effect::Scroll { dx, dy } => dispatch_scroll(dx, dy),
         Effect::Media(key) => dispatch_media(key),
         Effect::Native(native) => dispatch_native(native),
@@ -273,6 +275,14 @@ pub(super) fn hold_keys(keys: &[HeldKey], phase: KeyPhase) {
         inputs.reverse();
     }
     send_inputs(&inputs);
+}
+
+/// Post the ⇥ tap that opens the application switcher.
+///
+/// `SendInput` carries keyboard state across calls, and the hold already sent
+/// Alt's down edge ([`hold_keys`]), so the tap sends ⇥ alone.
+pub(super) fn tap_app_switcher() {
+    post_key(VK_TAB, &[]);
 }
 
 fn held_virtual_key(key: HeldKey) -> Option<u16> {

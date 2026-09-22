@@ -103,6 +103,13 @@ the chord down until the originating physical button is released, and also
 releases it if capture is interrupted, the binding becomes invalid, or the
 agent shuts down. Use it for push-to-talk and other hold-to-activate controls.
 
+`AppSwitcher` opens the platform's application switcher — ⌘Tab on macOS,
+Alt+Tab on Linux and Windows — and holds it open until the button is released,
+so the wheel or the arrow keys can cycle the selection before the release
+commits it. Bind it as a single action: a gesture click fires once at its
+release, which opens and immediately commits the switcher — a quick switch to
+the next application.
+
 A `{ short = ..., long = ... }` binding waits for the button's outcome instead
 of firing on press. Releasing before 500 ms fires `short`; keeping the button
 down for 500 ms fires `long` exactly once, and the later release does not also
