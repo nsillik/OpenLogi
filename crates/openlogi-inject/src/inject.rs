@@ -11,9 +11,7 @@ use std::collections::HashMap;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::{LazyLock, Mutex, PoisonError};
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use openlogi_core::binding::KeyboardUsage;
-use openlogi_core::binding::{Action, HoldKind, KeyCombo};
+use openlogi_core::binding::{Action, HoldKind, KeyCombo, KeyboardUsage};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use openlogi_core::binding::{Script, WorkflowStep};
 use openlogi_core::scroll::ScrollDelta;
