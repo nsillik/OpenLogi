@@ -13,7 +13,7 @@ use evdev::{AttributeSet, EventType, InputEvent, KeyCode, RelativeAxisCode};
 use zbus::blocking::Connection as DbusConn;
 
 use openlogi_core::binding::{
-    Action, Effect, KeyCombo, MediaKey, MouseButton, NativeAction, Shortcut,
+    Action, Effect, HoldKind, KeyCombo, MediaKey, MouseButton, NativeAction, Shortcut,
 };
 use openlogi_core::scroll::ScrollDelta;
 
@@ -40,6 +40,8 @@ pub(super) fn execute(action: &Action) {
         Effect::Click(button) => click(mouse_button_code(button)),
         Effect::Shortcut(shortcut) => press_combo(&combo(shortcut)),
         Effect::Key(combo) | Effect::HeldKey(combo) => press_combo(combo),
+        // No release context to hold the switcher open: open and commit it.
+        Effect::AppSwitcher => drop(super::press_hold(HoldKind::AppSwitcher)),
         Effect::Scroll { dx, dy } => dispatch_scroll(dx, dy),
         Effect::Media(key) => dispatch_media(key),
         Effect::Native(native) => dispatch_native(action, native),
@@ -113,6 +115,14 @@ pub(super) fn hold_keys(keys: &[HeldKey], phase: KeyPhase) {
     if !keys.is_empty() {
         emit(&held_key_events(&keys, phase));
     }
+}
+
+/// Post the ⇥ tap that opens the application switcher.
+///
+/// The virtual device's key state is its own, and the hold already pressed Alt
+/// ([`hold_keys`] posted one edge per changed key), so the tap presses ⇥ alone.
+pub(super) fn tap_app_switcher() {
+    press_key(&[], KeyCode::KEY_TAB);
 }
 
 /// MPRIS targets the running media player; XF86 volume keys go to the

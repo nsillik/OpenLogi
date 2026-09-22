@@ -116,6 +116,8 @@ pub enum ActionRingIcon {
     Book,
     /// Prohibited action glyph.
     Ban,
+    /// Application-switcher strip glyph.
+    AppSwitcher,
 }
 
 impl ActionRingIcon {
@@ -180,11 +182,12 @@ impl ActionRingIcon {
             Self::Palette => "action-icons/palette.svg",
             Self::Book => "action-icons/book-open.svg",
             Self::Ban => "action-icons/ban.svg",
+            Self::AppSwitcher => "action-icons/gallery-horizontal-end.svg",
         }
     }
 
     /// Every icon offered by the Actions Ring editor.
-    pub const ALL: [Self; 54] = [
+    pub const ALL: [Self; 55] = [
         Self::Pointer,
         Self::Mouse,
         Self::Copy,
@@ -239,6 +242,7 @@ impl ActionRingIcon {
         Self::Palette,
         Self::Book,
         Self::Ban,
+        Self::AppSwitcher,
     ];
 
     /// Stable catalog key used as this icon's accessible label.
@@ -297,6 +301,7 @@ impl ActionRingIcon {
             Self::Palette => "action_ring.palette",
             Self::Book => "action_ring.book",
             Self::Ban => "pointer.do_nothing",
+            Self::AppSwitcher => "actions.app_switcher",
         }
     }
 }

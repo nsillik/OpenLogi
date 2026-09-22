@@ -187,6 +187,15 @@ pub enum Action {
     /// cancellation and shutdown. Dispatchers without a release context must
     /// degrade this action to a balanced tap rather than leave keys held.
     HoldShortcut(KeyCombo),
+    /// Show the application switcher — ⌘Tab on macOS, Alt+Tab on Linux and
+    /// Windows — held open for the lifetime of the physical press: the wheel
+    /// and the arrow keys cycle the selection while it is open, and the
+    /// release commits it.
+    ///
+    /// Bind this as a single action rather than a gesture click. A gesture
+    /// click fires one-shot at its release, which opens the switcher and
+    /// immediately commits it — a quick switch to the next application.
+    AppSwitcher,
 }
 
 /// One step in a [`Action::Workflow`]. A workflow is a `Vec<WorkflowStep>`
@@ -259,6 +268,7 @@ macro_rules! for_each_unit_action {
             // Navigation
             MissionControl "Mission Control" "actions.mission_control" Navigation Grid,
             AppExpose "App Exposé" "actions.app_expose" Navigation Layers,
+            AppSwitcher "App Switcher" "actions.app_switcher" Navigation AppSwitcher,
             PreviousDesktop "Previous Desktop" "actions.previous_desktop" Navigation PreviousDesktop,
             NextDesktop "Next Desktop" "actions.next_desktop" Navigation NextDesktop,
             ShowDesktop "Show Desktop" "actions.show_desktop" Navigation Monitor,
@@ -392,13 +402,31 @@ macro_rules! derive_action_core {
 
 for_each_unit_action!(derive_action_core);
 
+/// The keyboard output a lifecycle-aware runtime holds for the lifetime of a
+/// physical press.
+///
+/// [`Action::hold_kind`] names one. The runtime opens it when the press starts
+/// and releases it on the press's terminal event, so a release, a cancellation,
+/// and shutdown all take one path. Dispatchers that do not own that release — a
+/// gesture click, a one-shot executor, `openlogi_inject::execute` — degrade each
+/// kind to a balanced tap of its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HoldKind {
+    /// A chord, held down until the press ends ([`Action::HoldShortcut`]).
+    Chord(KeyCombo),
+    /// The application switcher, held open until the press ends
+    /// ([`Action::AppSwitcher`]).
+    AppSwitcher,
+}
+
 impl Action {
-    /// The chord whose output must remain down until the originating press
-    /// ends, or `None` for an instantaneous action.
+    /// The held output this action owns for its press's lifetime, or `None`
+    /// when the action fires once.
     #[must_use]
-    pub fn held_combo(&self) -> Option<&KeyCombo> {
+    pub fn hold_kind(&self) -> Option<HoldKind> {
         match self {
-            Self::HoldShortcut(combo) => Some(combo),
+            Self::HoldShortcut(combo) => Some(HoldKind::Chord(combo.clone())),
+            Self::AppSwitcher => Some(HoldKind::AppSwitcher),
             _ => None,
         }
     }
