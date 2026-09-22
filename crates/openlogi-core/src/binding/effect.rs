@@ -1,6 +1,6 @@
 //! A platform-neutral synthesis IR.
 //!
-//! [`Action`] has one variant per user-facing behaviour (52 of them), but the
+//! [`Action`] has one variant per user-facing behaviour (54 of them), but the
 //! three `openlogi-inject` backends don't care about most of that
 //! granularity — they care about *mechanism*: "press this chord", "click
 //! this mouse button", "fire this media key", "there is no portable way to
