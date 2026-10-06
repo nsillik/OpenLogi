@@ -26,6 +26,7 @@ use super::capture_manager::{self, CaptureManager, ManagerInputs, PendingRestore
 use super::capture_session::{CaptureRecovery, CaptureSession, CaptureSlot, ReconcileAction};
 use super::retry::RETRY_DELAY;
 use super::shutdown::{ManagerCompletion, WatcherHandle};
+use crate::capture_plan::LifecycleInvalidation;
 use crate::hardware::DeviceAccess;
 use crate::receiver_access::{ReceiverRequestState, SessionReceiverLease};
 use crate::runtime::{ActionDispatcher, HidppSessionId};
@@ -77,6 +78,14 @@ impl KeyboardTarget {
 struct KeyboardDispatchPlan {
     config_key: String,
     bindings: BTreeMap<ButtonId, Binding>,
+}
+
+impl LifecycleInvalidation for KeyboardDispatchPlan {
+    /// Every field of a keyboard plan is what its admitted input resolves
+    /// through — there is no context-only field — so any change ends them.
+    fn invalidates_lifecycles_of(&self, replacement: &Self) -> bool {
+        self != replacement
+    }
 }
 type RunningKeyboardSession = CaptureSession<KeyboardTarget, KeyboardDispatchPlan>;
 type KeyboardSlot = CaptureSlot<KeyboardTarget, KeyboardDispatchPlan, PendingRestore>;
@@ -204,13 +213,18 @@ fn reconcile_session(
     dispatcher: &ActionDispatcher,
 ) {
     let desired = wanted.map(|(target, dispatch)| (target, dispatch));
-    let action = running.reconcile(desired);
-    if action != ReconcileAction::None {
-        dispatcher.cancel_hidpp_session(running.id());
-    }
-    if action == ReconcileAction::DispatchChanged {
-        let config_key = running.dispatch().config_key.clone();
-        running.rekey(&config_key);
+    match running.reconcile(desired) {
+        ReconcileAction::None => {}
+        ReconcileAction::Retiring => dispatcher.cancel_hidpp_session(running.id()),
+        ReconcileAction::DispatchChanged {
+            invalidates_lifecycles,
+        } => {
+            if invalidates_lifecycles {
+                dispatcher.cancel_hidpp_session(running.id());
+            }
+            let config_key = running.dispatch().config_key.clone();
+            running.rekey(&config_key);
+        }
     }
 }
 

@@ -332,7 +332,9 @@ fn an_active_session_refreshes_bindings_without_rearming_hardware() {
 
     assert_eq!(
         session.reconcile(Some((&new_plan.target, &new_plan.dispatch))),
-        ReconcileAction::DispatchChanged,
+        ReconcileAction::DispatchChanged {
+            invalidates_lifecycles: true,
+        },
         "a hot plan refresh must cancel input lifecycles admitted under the old action map"
     );
 
@@ -435,7 +437,12 @@ fn config_key_adoption_hot_refreshes_the_same_physical_capture_slot() {
         .get(&physical_key)
         .map(|plan| (&plan.target, &plan.dispatch));
 
-    assert_eq!(running.reconcile(desired), ReconcileAction::DispatchChanged);
+    assert_eq!(
+        running.reconcile(desired),
+        ReconcileAction::DispatchChanged {
+            invalidates_lifecycles: true,
+        }
+    );
     running.rekey(&wanted[&physical_key].dispatch.config_key);
     assert!(running.is_active());
     assert_eq!(running.id().device_key(), "unit:00000001");
@@ -481,7 +488,9 @@ fn active_session_adopts_action_only_plan_changes_without_rearming() {
     assert_eq!(first.target, rebound.target);
     assert_eq!(
         session.reconcile(Some((&rebound.target, &rebound.dispatch))),
-        ReconcileAction::DispatchChanged
+        ReconcileAction::DispatchChanged {
+            invalidates_lifecycles: true,
+        }
     );
     assert_eq!(
         session.dispatch().bindings.get(&ButtonId::DpiToggle),
@@ -522,7 +531,9 @@ fn active_session_adopts_gesture_and_per_app_dispatch_changes() {
     assert_eq!(first.target, gestured.target);
     assert_eq!(
         session.reconcile(Some((&gestured.target, &gestured.dispatch))),
-        ReconcileAction::DispatchChanged
+        ReconcileAction::DispatchChanged {
+            invalidates_lifecycles: true,
+        }
     );
     assert_eq!(
         session
@@ -566,7 +577,9 @@ fn active_session_adopts_gesture_and_per_app_dispatch_changes() {
     assert_eq!(base.target, per_app.target);
     assert_eq!(
         session.reconcile(Some((&per_app.target, &per_app.dispatch))),
-        ReconcileAction::DispatchChanged
+        ReconcileAction::DispatchChanged {
+            invalidates_lifecycles: true,
+        }
     );
     assert_eq!(
         session.dispatch().bindings.get(&ButtonId::DpiToggle),
@@ -613,7 +626,9 @@ fn wheel_configuration_changes_refresh_without_rearming_hardware() {
     );
     assert_eq!(
         session.reconcile(Some((&rebound.target, &rebound.dispatch))),
-        ReconcileAction::DispatchChanged,
+        ReconcileAction::DispatchChanged {
+            invalidates_lifecycles: true,
+        },
         "dispatch-only binding changes must not cycle firmware diversion"
     );
     assert!(session.is_active());
@@ -631,7 +646,9 @@ fn wheel_configuration_changes_refresh_without_rearming_hardware() {
     assert_eq!(rebound.target, rescaled.target);
     assert_eq!(
         session.reconcile(Some((&rescaled.target, &rescaled.dispatch))),
-        ReconcileAction::DispatchChanged,
+        ReconcileAction::DispatchChanged {
+            invalidates_lifecycles: true,
+        },
         "an already-diverted wheel needs a state reset, not a hardware restart"
     );
     assert!(session.is_active());

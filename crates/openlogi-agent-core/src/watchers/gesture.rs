@@ -208,8 +208,17 @@ fn reconcile_session(
     wanted: Option<(&CaptureTarget, &DispatchPlan)>,
     dispatcher: &mut InputDispatcher,
 ) {
-    if session.reconcile(wanted) == ReconcileAction::DispatchChanged {
-        dispatcher.cancel_session(session.id());
+    if let ReconcileAction::DispatchChanged {
+        invalidates_lifecycles,
+    } = session.reconcile(wanted)
+    {
+        // A plan that differs only in its pointer target is adopted without
+        // touching the live lifecycles: nothing they resolve through changed,
+        // and the presses that lost their window are ended by the pointer change
+        // itself.
+        if invalidates_lifecycles {
+            dispatcher.cancel_session(session.id());
+        }
         let config_key = session.dispatch().config_key.clone();
         session.rekey(&config_key);
     }

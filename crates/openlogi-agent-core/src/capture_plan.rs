@@ -44,7 +44,8 @@ pub struct CaptureTarget {
 ///
 /// This may be hot-replaced while [`CaptureTarget`] stays armed. The manager
 /// cancels input lifecycles admitted under the previous value before using the
-/// replacement.
+/// replacement — except when nothing a live press resolves through changed,
+/// which `DispatchPlan::invalidates_lifecycles_of` decides.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchPlan {
     /// Current config namespace for actions from this physical device. Unlike
@@ -67,6 +68,56 @@ pub struct DispatchPlan {
     /// Pointer identity used to select these mouse bindings; absent for the
     /// explicitly focused policy and keyboard input.
     pub pointer_target: Option<openlogi_hook::PointerTarget>,
+}
+
+/// Dispatch state a capture session can hot-replace without touching firmware.
+///
+/// The session has to know whether adopting a replacement ends the input
+/// lifecycles the previous value admitted — the manager cancels them — and that
+/// answer belongs to the plan, which owns the fields the question is about.
+pub(crate) trait LifecycleInvalidation: Clone + PartialEq {
+    /// Whether adopting `replacement` in place of `self` ends the input
+    /// lifecycles admitted under `self`.
+    fn invalidates_lifecycles_of(&self, replacement: &Self) -> bool;
+}
+
+impl DispatchPlan {
+    /// Whether adopting `replacement` in place of `self` ends the input
+    /// lifecycles admitted under `self`.
+    ///
+    /// Every field answers yes except the pointer target. A press keeps
+    /// resolving through the namespace, the bindings, the gesture maps and the
+    /// wheel sensitivity it was admitted under, so replacing any of those
+    /// changes what it means. The pointer target only *selects* which bindings
+    /// applied, and the presses that lose their window are ended by the pointer
+    /// change itself — `ButtonState::cancel_pointer_except` ends exactly the ones
+    /// whose action is addressed at it. Ending every press of the session
+    /// instead is what made a held app switcher commit the moment the cursor
+    /// crossed a window.
+    #[must_use]
+    pub(crate) fn invalidates_lifecycles_of(&self, replacement: &Self) -> bool {
+        // Destructured without `..` so a field added later has to be judged
+        // here rather than silently joining the pointer target's side.
+        let Self {
+            config_key,
+            bindings,
+            gesture_bindings,
+            side_gesture_bindings,
+            thumbwheel_sensitivity,
+            pointer_target: _,
+        } = self;
+        *config_key != replacement.config_key
+            || *bindings != replacement.bindings
+            || *gesture_bindings != replacement.gesture_bindings
+            || *side_gesture_bindings != replacement.side_gesture_bindings
+            || *thumbwheel_sensitivity != replacement.thumbwheel_sensitivity
+    }
+}
+
+impl LifecycleInvalidation for DispatchPlan {
+    fn invalidates_lifecycles_of(&self, replacement: &Self) -> bool {
+        Self::invalidates_lifecycles_of(self, replacement)
+    }
 }
 
 /// One device's independently versioned hardware target and dispatch plan.
@@ -282,6 +333,72 @@ mod tests {
             .divert_buttons
             .iter()
             .any(|&(_, diverted)| diverted == button)
+    }
+
+    fn dispatch_plan() -> DispatchPlan {
+        DispatchPlan {
+            config_key: "mouse-a".to_owned(),
+            bindings: BTreeMap::new(),
+            gesture_bindings: BTreeMap::new(),
+            side_gesture_bindings: BTreeMap::new(),
+            thumbwheel_sensitivity: ThumbwheelSensitivity::DEFAULT,
+            pointer_target: None,
+        }
+    }
+
+    /// Only a change to something a live press resolves through ends it. The
+    /// pointer target only selected which bindings applied, and the presses that
+    /// lose their window are ended by the pointer change itself; ending the
+    /// whole session's lifecycles instead committed a held app switcher the
+    /// moment the cursor crossed a window.
+    #[test]
+    fn a_pointer_only_plan_change_invalidates_no_lifecycles() {
+        let base = dispatch_plan();
+        assert!(
+            !base.invalidates_lifecycles_of(&base),
+            "an identical plan replaces nothing"
+        );
+
+        let mut reselected = base.clone();
+        reselected.pointer_target = Some(openlogi_hook::PointerTarget::Desktop);
+        assert!(
+            !reselected.invalidates_lifecycles_of(&base),
+            "a hover change reselects bindings without rebinding them"
+        );
+
+        let mut rekeyed = base.clone();
+        rekeyed.config_key = "receiver:cafe:slot:2".to_owned();
+        assert!(
+            rekeyed.invalidates_lifecycles_of(&base),
+            "a config rekey changes the namespace a press resolves against"
+        );
+
+        let mut rebound = base.clone();
+        rebound
+            .bindings
+            .insert(ButtonId::Back, Binding::Single(Action::Copy));
+        assert!(
+            rebound.invalidates_lifecycles_of(&base),
+            "a rebound button changes what its press means"
+        );
+
+        let mut gestured = base.clone();
+        gestured.gesture_bindings.insert(
+            ButtonId::GestureButton,
+            [(GestureDirection::Click, Action::MissionControl)].into(),
+        );
+        assert!(gestured.invalidates_lifecycles_of(&base));
+
+        let mut side_gestured = base.clone();
+        side_gestured.side_gesture_bindings.insert(
+            ButtonId::Forward,
+            [(GestureDirection::Click, Action::ShowDesktop)].into(),
+        );
+        assert!(side_gestured.invalidates_lifecycles_of(&base));
+
+        let mut rescaled = base.clone();
+        rescaled.thumbwheel_sensitivity = ThumbwheelSensitivity::MIN;
+        assert!(rescaled.invalidates_lifecycles_of(&base));
     }
 
     #[test]

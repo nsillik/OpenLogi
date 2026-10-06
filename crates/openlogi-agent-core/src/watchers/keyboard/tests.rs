@@ -108,7 +108,9 @@ fn binding_changes_refresh_without_rearming_hardware() {
 
     assert_eq!(
         session.reconcile(Some((&current_target, &new_dispatch))),
-        ReconcileAction::DispatchChanged
+        ReconcileAction::DispatchChanged {
+            invalidates_lifecycles: true,
+        }
     );
     assert!(session.is_active());
     assert_eq!(session.dispatch(), &new_dispatch);

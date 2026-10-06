@@ -10,6 +10,7 @@
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
+use crate::capture_plan::LifecycleInvalidation;
 use crate::runtime::HidppSessionId;
 
 /// Effect of reconciling one tracked session against the latest wanted plan.
@@ -17,9 +18,15 @@ use crate::runtime::HidppSessionId;
 pub(super) enum ReconcileAction {
     /// Nothing visible to the manager changed.
     None,
-    /// Hardware remains armed, but dispatch state changed. The manager must
-    /// cancel input lifecycles admitted under the previous dispatch plan.
-    DispatchChanged,
+    /// Hardware remains armed, but dispatch state changed, so the manager adopts
+    /// the replacement. `invalidates_lifecycles` says whether it also ends the
+    /// input lifecycles admitted under the previous plan — see
+    /// [`DispatchPlan::invalidates_lifecycles_of`](crate::capture_plan::DispatchPlan::invalidates_lifecycles_of).
+    DispatchChanged {
+        /// Whether the manager must cancel lifecycles admitted under the plan
+        /// being replaced.
+        invalidates_lifecycles: bool,
+    },
     /// Hardware teardown started. The retiring dispatch plan stays frozen and
     /// authoritative until completion.
     Retiring,
@@ -220,10 +227,11 @@ impl<Target, Dispatch> CaptureSession<Target, Dispatch> {
     }
 }
 
-impl<Target: PartialEq, Dispatch: Clone + PartialEq> CaptureSession<Target, Dispatch> {
+impl<Target: PartialEq, Dispatch: LifecycleInvalidation> CaptureSession<Target, Dispatch> {
     /// Reconcile against the latest wanted target and dispatch state. A target
     /// change begins teardown exactly once; dispatch-only changes hot-refresh
-    /// the plan while preserving the hardware epoch.
+    /// the plan while preserving the hardware epoch, and report whether they
+    /// also invalidate the lifecycles the outgoing plan admitted.
     pub(super) fn reconcile(&mut self, wanted: Option<(&Target, &Dispatch)>) -> ReconcileAction {
         if !self.is_active() {
             return ReconcileAction::None;
@@ -234,8 +242,12 @@ impl<Target: PartialEq, Dispatch: Clone + PartialEq> CaptureSession<Target, Disp
             if self.dispatch == *dispatch {
                 return ReconcileAction::None;
             }
+            // Ask the outgoing plan, which still has both values in hand.
+            let invalidates_lifecycles = self.dispatch.invalidates_lifecycles_of(dispatch);
             self.dispatch.clone_from(dispatch);
-            return ReconcileAction::DispatchChanged;
+            return ReconcileAction::DispatchChanged {
+                invalidates_lifecycles,
+            };
         }
         let SessionPhase::Active(stop) = std::mem::replace(&mut self.phase, SessionPhase::Draining)
         else {
@@ -250,9 +262,36 @@ impl<Target: PartialEq, Dispatch: Clone + PartialEq> CaptureSession<Target, Disp
 mod tests {
     use super::*;
 
-    fn session() -> CaptureSession<u8, &'static str> {
+    /// The session's dispatch state is generic; this stands in for a real plan
+    /// and lets a test name the answer the replacement carries.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct Dispatch {
+        name: &'static str,
+        invalidates: bool,
+    }
+
+    impl LifecycleInvalidation for Dispatch {
+        fn invalidates_lifecycles_of(&self, replacement: &Self) -> bool {
+            replacement.invalidates
+        }
+    }
+
+    /// A replacement that ends the lifecycles the outgoing plan admitted.
+    fn dispatch(name: &'static str) -> Dispatch {
+        Dispatch {
+            name,
+            invalidates: true,
+        }
+    }
+
+    fn session() -> CaptureSession<u8, Dispatch> {
         let (stop, _stop_rx) = oneshot::channel();
-        CaptureSession::active(HidppSessionId::with_epoch("mouse-a", 7), 1, "old", stop)
+        CaptureSession::active(
+            HidppSessionId::with_epoch("mouse-a", 7),
+            1,
+            dispatch("old"),
+            stop,
+        )
     }
 
     #[test]
@@ -260,11 +299,38 @@ mod tests {
         let mut session = session();
 
         assert_eq!(
-            session.reconcile(Some((&1, &"new"))),
-            ReconcileAction::DispatchChanged
+            session.reconcile(Some((&1, &dispatch("new")))),
+            ReconcileAction::DispatchChanged {
+                invalidates_lifecycles: true,
+            }
         );
         assert!(session.is_active());
-        assert_eq!(session.dispatch(), &"new");
+        assert_eq!(session.dispatch(), &dispatch("new"));
+    }
+
+    /// A plan that differs only in the context it was selected for refreshes
+    /// without ending the lifecycles the previous one admitted. A held app
+    /// switcher is one of them, and its modifier's up edge is its commit.
+    #[test]
+    fn a_context_only_dispatch_change_keeps_live_lifecycles() {
+        let mut session = session();
+        let selected_for = Dispatch {
+            name: "pointer-selected",
+            invalidates: false,
+        };
+
+        assert_eq!(
+            session.reconcile(Some((&1, &selected_for))),
+            ReconcileAction::DispatchChanged {
+                invalidates_lifecycles: false,
+            }
+        );
+        assert!(session.is_active());
+        assert_eq!(
+            session.dispatch(),
+            &selected_for,
+            "the replacement is adopted even when it invalidates nothing"
+        );
     }
 
     #[test]
@@ -272,16 +338,16 @@ mod tests {
         let mut session = session();
 
         assert_eq!(
-            session.reconcile(Some((&2, &"new"))),
+            session.reconcile(Some((&2, &dispatch("new")))),
             ReconcileAction::Retiring
         );
         assert!(!session.is_active());
-        assert_eq!(session.dispatch(), &"old");
+        assert_eq!(session.dispatch(), &dispatch("old"));
         assert_eq!(
-            session.reconcile(Some((&1, &"later"))),
+            session.reconcile(Some((&1, &dispatch("later")))),
             ReconcileAction::None
         );
-        assert_eq!(session.dispatch(), &"old");
+        assert_eq!(session.dispatch(), &dispatch("old"));
     }
 
     #[test]
