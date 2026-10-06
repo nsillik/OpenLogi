@@ -43,6 +43,11 @@ fn pointer_action_allowed(
     {
         return false;
     }
+    // Only effects that send their output *into* the hovered window need it
+    // focused: a shortcut, a typed string, or a script would otherwise have to
+    // activate a background window. The switcher is global like desktop
+    // switching — its ⌘↓ ⇥ is consumed by the system's own panel, never
+    // delivered into a window — so it is admitted either way.
     let needs_focus = match action.effect() {
         Effect::Shortcut(_)
         | Effect::Key(_)
@@ -52,6 +57,7 @@ fn pointer_action_allowed(
         | Effect::Native(NativeAction::AppExpose) => true,
         Effect::None
         | Effect::Click(_)
+        | Effect::AppSwitcher
         | Effect::Scroll { .. }
         | Effect::Media(_)
         | Effect::Native(_)
