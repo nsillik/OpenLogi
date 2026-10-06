@@ -279,6 +279,95 @@ fn pointer_change_cancels_old_target_but_preserves_keyboard_and_new_target() {
     assert!(owner.shutdown());
 }
 
+/// The app switcher holds a modifier and commits on its up edge, so ending its
+/// press early is ending the switcher: a pointer move during a global hold must
+/// leave the press — and therefore the panel — alone.
+#[test]
+fn pointer_change_spares_a_press_whose_output_is_global() {
+    use openlogi_hook::PointerTarget;
+    let (sent, received) = mpsc::channel();
+    let mut owner = ButtonRuntimeOwner::spawn(move |event| sent.send(event).expect("receiver"))
+        .expect("worker");
+    let input = owner.input();
+    let old = PointerTarget::Window {
+        process_id: 41,
+        window_id: 7,
+    };
+    let current = PointerTarget::Desktop;
+    let switcher_binding = Binding::Single(Action::AppSwitcher);
+    let shortcut_binding = Binding::Single(Action::Copy);
+
+    let switcher = input
+        .try_hook_down_with_target(
+            ButtonId::Back,
+            Some(&switcher_binding),
+            ActionDispatchTarget::Pointer(old),
+        )
+        .expect("switcher down");
+    let shortcut = input
+        .try_hook_down_with_target(
+            ButtonId::Forward,
+            Some(&shortcut_binding),
+            ActionDispatchTarget::Pointer(old),
+        )
+        .expect("shortcut down");
+    assert!(matches!(
+        recv_event(&received),
+        ButtonRuntimeEvent::Started(_)
+    ));
+    assert!(matches!(
+        recv_event(&received),
+        ButtonRuntimeEvent::Started(_)
+    ));
+
+    input.cancel_pointer_except(current);
+
+    // Only the press whose output was addressed at the old window ends.
+    let ButtonRuntimeEvent::Ended { press, reason } = recv_event(&received) else {
+        panic!("the window-scoped press must end");
+    };
+    assert_eq!(press.token(), &shortcut);
+    assert_eq!(reason, EndReason::Canceled(CancelReason::Invalidated));
+
+    // The global one is still there to take its own release.
+    assert!(input.try_hook_up(ButtonId::Back));
+    let ButtonRuntimeEvent::Ended { press, reason } = recv_event(&received) else {
+        panic!("the global press must end on its release");
+    };
+    assert_eq!(press.token(), &switcher);
+    assert_eq!(reason, EndReason::Released);
+    assert!(owner.shutdown());
+}
+
+/// A long-press pair whose long action is global keeps that scope after the
+/// threshold fires, so the threshold does not become a pointer-change trigger.
+#[test]
+fn pointer_change_spares_a_fired_global_long_press() {
+    use openlogi_hook::PointerTarget;
+    let mut state = ButtonState::default();
+    let mut press = hook_press(1, ButtonId::Back);
+    press.behavior = PressBehavior::new(
+        Some(&long_press(Action::Copy, Action::AppSwitcher)),
+        Instant::now(),
+    );
+    press.target = ActionDispatchTarget::Pointer(PointerTarget::Window {
+        process_id: 41,
+        window_id: 7,
+    });
+    assert!(state.press(press).is_none());
+
+    let now = Instant::now() + LONG_PRESS_THRESHOLD;
+    let mut fired = Vec::new();
+    emit_due_long_presses(&mut state, now, &mut |event| fired.push(event));
+    assert_eq!(fired.len(), 1, "the long action fires at the threshold");
+
+    let canceled = state.cancel_pointer_except(PointerTarget::Desktop);
+    assert!(
+        canceled.is_empty(),
+        "a global long action is not invalidated by the hovered window"
+    );
+}
+
 #[test]
 fn source_cancellation_invalidates_queued_gesture_work() {
     let (sent, received) = mpsc::channel();

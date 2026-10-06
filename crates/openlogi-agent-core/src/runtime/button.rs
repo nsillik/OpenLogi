@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use openlogi_core::binding::{Action, Binding, ButtonId, LONG_PRESS_THRESHOLD};
 use tracing::warn;
 
-use super::ActionDispatchTarget;
+use super::{ActionDispatchTarget, pointer};
 
 /// OS-hook callbacks must fail open rather than block.
 const EVENT_QUEUE_CAPACITY: usize = 128;
@@ -192,7 +192,8 @@ enum PressBehavior {
         deadline: Instant,
     },
     /// The long action fired; release must not also fire the short action.
-    LongPressFired,
+    /// The fired action stays so the pointer-scope check can still see it.
+    LongPressFired(Action),
 }
 
 impl PressBehavior {
@@ -212,21 +213,40 @@ impl PressBehavior {
     fn deadline(&self) -> Option<Instant> {
         match self {
             Self::LongPressPending { deadline, .. } => Some(*deadline),
-            Self::LifecycleOnly | Self::Immediate(_) | Self::LongPressFired => None,
+            Self::LifecycleOnly | Self::Immediate(_) | Self::LongPressFired(_) => None,
         }
     }
 
     fn start_action(&self) -> Option<&Action> {
         match self {
             Self::Immediate(action) => Some(action),
-            Self::LifecycleOnly | Self::LongPressPending { .. } | Self::LongPressFired => None,
+            Self::LifecycleOnly | Self::LongPressPending { .. } | Self::LongPressFired(_) => None,
         }
     }
 
     fn release_action(&self) -> Option<&Action> {
         match self {
             Self::LongPressPending { short, .. } => Some(short),
-            Self::LifecycleOnly | Self::Immediate(_) | Self::LongPressFired => None,
+            Self::LifecycleOnly | Self::Immediate(_) | Self::LongPressFired(_) => None,
+        }
+    }
+
+    /// Whether a change of the hovered window invalidates this press.
+    ///
+    /// Only an output addressed at that window can be invalidated by it: a
+    /// global output has no window to lose. A press with no action to judge —
+    /// a gesture lifecycle dispatching its action separately — stays
+    /// invalidated, the way every pointer-scoped press did before global
+    /// outputs could be held.
+    fn invalidated_by_pointer_change(&self) -> bool {
+        match self {
+            Self::Immediate(action) | Self::LongPressFired(action) => {
+                pointer::addresses_pointer_window(action)
+            }
+            Self::LongPressPending { short, long, .. } => {
+                pointer::addresses_pointer_window(short) || pointer::addresses_pointer_window(long)
+            }
+            Self::LifecycleOnly => true,
         }
     }
 
@@ -238,7 +258,7 @@ impl PressBehavior {
             return None;
         }
         let action = long.clone();
-        *self = Self::LongPressFired;
+        *self = Self::LongPressFired(action.clone());
         Some(action)
     }
 }
@@ -371,8 +391,18 @@ impl ButtonState {
         self.active.drain().map(|(_, press)| press).collect()
     }
 
+    /// End the presses the hovered window's departure actually invalidates.
+    ///
+    /// A press whose action addresses the window it was admitted against cannot
+    /// outlive that window; a global output can, and for a held one it must —
+    /// the app switcher commits on its modifier's up edge, so ending the press
+    /// is ending the switcher.
     fn cancel_pointer_except(&mut self, current: openlogi_hook::PointerTarget) -> Vec<ActivePress> {
-        self.active.extract_if(|_, press| matches!(press.target, ActionDispatchTarget::Pointer(target) if target != current))
+        self.active
+            .extract_if(|_, press| {
+                matches!(press.target, ActionDispatchTarget::Pointer(target) if target != current)
+                    && press.behavior.invalidated_by_pointer_change()
+            })
             .map(|(_, press)| press)
             .collect()
     }

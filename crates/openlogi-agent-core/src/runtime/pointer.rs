@@ -43,12 +43,29 @@ fn pointer_action_allowed(
     {
         return false;
     }
-    // Only effects that send their output *into* the hovered window need it
-    // focused: a shortcut, a typed string, or a script would otherwise have to
-    // activate a background window. The switcher is global like desktop
-    // switching — its ⌘↓ ⇥ is consumed by the system's own panel, never
-    // delivered into a window — so it is admitted either way.
-    let needs_focus = match action.effect() {
+    // Only an action whose output lands in the hovered window needs it focused
+    // or is invalidated when that window goes away — see
+    // `addresses_pointer_window`.
+    !addresses_pointer_window(action)
+        || (matches!(captured, PointerTarget::Window { .. }) && is_focused())
+}
+
+/// Whether this action's output is addressed at the window under the pointer.
+///
+/// One decision with two consumers, and they have to agree:
+/// [`pointer_action_allowed`] refuses such an action once the captured window is
+/// no longer hovered or focused, and `ButtonState::cancel_pointer_except` ends
+/// such a press when the hovered window changes. An action that answers `false`
+/// has no window to lose, so a pointer move must not disturb it — for the app
+/// switcher, whose own panel becomes the hovered window the moment it opens,
+/// that move would otherwise be the switcher's commit edge.
+///
+/// An effect qualifies when it hands its output to a window — a shortcut, a
+/// chord, a typed string, a script, or App Exposé — rather than to the system at
+/// large, the way media keys, desktop switching, the Actions Ring and the app
+/// switcher do.
+pub(super) fn addresses_pointer_window(action: &Action) -> bool {
+    match action.effect() {
         Effect::Shortcut(_)
         | Effect::Key(_)
         | Effect::HeldKey(_)
@@ -62,8 +79,7 @@ fn pointer_action_allowed(
         | Effect::Media(_)
         | Effect::Native(_)
         | Effect::AgentSide => false,
-    };
-    !needs_focus || (matches!(captured, PointerTarget::Window { .. }) && is_focused())
+    }
 }
 
 #[cfg(test)]
